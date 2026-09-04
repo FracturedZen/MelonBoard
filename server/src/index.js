@@ -736,7 +736,7 @@ async function discordInteraction(request, env, ctx) {
 
     if (name === "leaderboard") {
       const page = Math.max(1, Number(optionValue(body, "page") ?? 1));
-      return json({ type: 4, data: { embeds: [await boardEmbed(env, page)] } });
+      return json({ type: 4, data: { embeds: await boardEmbeds(env, page) } });
     }
 
     if (name === "link") {
@@ -976,13 +976,57 @@ function scoringLine(w) {
   return `chop ${w.mined}  ·  place ${w.placed}  ·  plant ${w.planted}  ·  craft ${w.crafted}`;
 }
 
-async function boardEmbed(env, page = 1) {
+/**
+ * Shared style. Everything is padded BEFORE colour is applied -- escape codes are zero width on
+ * screen but count in String.length, so padding a coloured string shreds the alignment.
+ *
+ * ASCII only, and narrow. A code block inside an embed WRAPS rather than scrolls, and an embed is
+ * narrower than a normal message, so anything much past 40 columns folds and looks broken. That
+ * is why the stats are two three-column tables rather than one six-column one.
+ */
+const HEAD = "\u001b[1;37m";
+const RULE = "\u001b[0;32m";
+
+/** One aligned, colour-tiered table. Columns clear their headers as well as their values. */
+function statTable(players, offset, columns) {
+  const nameW = Math.min(16, Math.max("FARMER".length,
+    ...players.map((p) => p.username.length)));
+
+  for (const c of columns) {
+    c.w = Math.max(c.head.length, ...players.map((p) => fmt(p[c.key] ?? 0).length));
+  }
+
+  const header = HEAD + "FARMER".padEnd(nameW) +
+    columns.map((c) => "  " + c.head.padStart(c.w)).join("") + ANSI_RESET;
+
+  const width = nameW + columns.reduce((n, c) => n + 2 + c.w, 0);
+
+  const rows = players.map((p) =>
+    p.username.slice(0, nameW).padEnd(nameW) +
+    columns.map((c) => {
+      const value = p[c.key] ?? 0;
+      return "  " + colourPoints(value, fmt(value).padStart(c.w));
+    }).join("")
+  );
+
+  return "```ansi\n" + header + "\n" +
+    RULE + "-".repeat(width) + ANSI_RESET + "\n" +
+    rows.join("\n") + "\n```";
+}
+
+/**
+ * The board, as two panels in one message: ranking, then per-player stats.
+ *
+ * Six stat columns cannot fit an embed's width, so they are split across two tables rather than
+ * abbreviated into illegibility or dropped.
+ */
+async function boardEmbeds(env, page = 1) {
   const offset = (page - 1) * BOARD_SIZE;
   const players = await topPlayers(env, BOARD_SIZE, offset);
   const w = weights(env);
 
   if (players.length === 0) {
-    return {
+    return [{
       color: MELON_GREY,
       author: { name: "MELON LEADERBOARD" },
       title: "🍉  No scores yet",
@@ -990,64 +1034,32 @@ async function boardEmbed(env, page = 1) {
         ? "_Nothing on this page._"
         : "_Install the mod, chop a few melons, and you'll show up here._",
       footer: { text: scoringLine(w) },
-    };
+    }];
   }
 
-  // WIDTH IS THE CONSTRAINT, not character count.
-  //
-  // A code block inside an embed WRAPS rather than scrolls, and an embed is narrower than a
-  // normal message, so anything past roughly 40 columns folds onto the next line and looks
-  // broken. Six stat columns cannot fit in that, so only rank, name and score live in the
-  // aligned block -- the part that needs colour and alignment -- and the per-player stats move
-  // into a field below, where wrapping is graceful instead of ruinous.
-  //
-  // ASCII only: Discord's code-block font does not give box-drawing glyphs the same advance
-  // width as ASCII, so a frame built from them skews even when every row is the same length.
-  const HEAD = "\u001b[1;37m";
-  const RULE = "\u001b[0;32m";
-
-  // Column widths must clear the HEADER as well as the values, or the heading overhangs its own
-  // column by a character and everything below it reads as misaligned.
-  const nameW = Math.min(16, Math.max("FARMER".length, ...players.map((p) => p.username.length)));
+  // ---- panel one: the ranking -------------------------------------------
+  const nameW = Math.min(16, Math.max("FARMER".length,
+    ...players.map((p) => p.username.length)));
   const ptsW = Math.max("POINTS".length, ...players.map((p) => fmt(p.points).length));
   const rankW = Math.max(1, String(offset + players.length).length);
 
-  const header =
-    HEAD + "#".padStart(rankW) + "  " + "FARMER".padEnd(nameW) + "  " +
-    "POINTS".padStart(ptsW) + ANSI_RESET;
+  const rankHeader = HEAD + "#".padStart(rankW) + "  " + "FARMER".padEnd(nameW) +
+    "  " + "POINTS".padStart(ptsW) + ANSI_RESET;
+  const rankWidth = rankW + 2 + nameW + 2 + ptsW;
 
-  const width = rankW + 2 + nameW + 2 + ptsW;
-
-  const rows = players.map((p, i) => {
+  const rankRows = players.map((p, i) => {
     const rank = offset + i + 1;
-    const rankCell = String(rank).padStart(rankW);
-
-    return (rank <= 3 ? "\u001b[1;33m" + rankCell + ANSI_RESET : rankCell) +
+    const cell = String(rank).padStart(rankW);
+    return (rank <= 3 ? "\u001b[1;33m" + cell + ANSI_RESET : cell) +
       "  " + p.username.slice(0, nameW).padEnd(nameW) +
       "  " + colourPoints(p.points, fmt(p.points).padStart(ptsW));
   });
 
-  // Medals and bold render only OUTSIDE a code block; colour renders only inside one.
+  // Medals and bold render only OUTSIDE a code block; colour only inside one.
   const podium = players.slice(0, 3).map((p, n) =>
     MEDALS[n] + " **" + escapeMd(p.username) + "** `" + fmt(p.points) + "`"
   ).join("  ");
 
-  // Free-flowing text, so a long line wraps tidily instead of breaking an alignment.
-  const breakdown = players.map((p, i) =>
-    "`" + String(offset + i + 1).padStart(rankW) + "` **" + escapeMd(p.username) + "** — " +
-    `${fmt(p.mined)} chop · ${fmt(p.placed)} place · ${fmt(p.crafted)} craft · ` +
-    `${fmt(p.planted)} plant · ${fmt(p.afk ?? 0)} afk · ${fmt(p.slices ?? 0)} 🍈`
-  ).join("\n");
-
-  const description =
-    (offset === 0 && podium ? podium + "\n\n" : "") +
-    "```ansi\n" +
-    header + "\n" +
-    RULE + "-".repeat(width) + ANSI_RESET + "\n" +
-    rows.join("\n") +
-    "\n```";
-
-  // Community totals give the board a sense of scale that a list of names cannot.
   const totals = await env.DB.prepare(
     `SELECT COUNT(*) AS players,
             SUM(t_mined - b_mined)     AS mined,
@@ -1060,19 +1072,16 @@ async function boardEmbed(env, page = 1) {
   const harvested = (totals?.mined ?? 0) + (totals?.placed ?? 0)
     + (totals?.crafted ?? 0) + (totals?.planted ?? 0);
 
-  return {
+  const ranking = {
     color: MELON_GREEN,
     author: { name: "MELON LEADERBOARD" },
     title: page > 1 ? `🍉  Melon Farmers · page ${page}` : "🍉  Top Melon Farmers",
-    description,
+    description:
+      (offset === 0 && podium ? podium + "\n\n" : "") +
+      "```ansi\n" + rankHeader + "\n" +
+      RULE + "-".repeat(rankWidth) + ANSI_RESET + "\n" +
+      rankRows.join("\n") + "\n```",
     fields: [
-      // Discord caps a field value at 1024 characters; 15 players of breakdown fits comfortably,
-      // but truncate rather than have the whole embed rejected if it ever does not.
-      {
-        name: "Stats",
-        value: breakdown.length > 1000 ? breakdown.slice(0, 1000) + "\n…" : breakdown,
-        inline: false,
-      },
       { name: "Scoring", value: scoringLine(w), inline: true },
       {
         name: "Community",
@@ -1080,12 +1089,35 @@ async function boardEmbed(env, page = 1) {
         inline: true,
       },
     ],
-    footer: {
-      text: "score colour · 10k white · 100k yellow · 1m lime · 1b red",
-    },
-    // Rendered natively by Discord as a local time, which beats a hand-formatted UTC string.
+    footer: { text: "score colour · 10k white · 100k yellow · 1m lime · 1b red" },
     timestamp: new Date().toISOString(),
   };
+
+  // ---- panel two: the stats ---------------------------------------------
+  const stats = {
+    color: MELON_PINK,
+    title: "🍈  Player Stats",
+    description:
+      statTable(players, offset, [
+        { key: "mined", head: "CHOP" },
+        { key: "placed", head: "PLACE" },
+        { key: "crafted", head: "CRAFT" },
+      ]) + "
+" +
+      statTable(players, offset, [
+        { key: "planted", head: "PLANT" },
+        { key: "afk", head: "AFK" },
+        { key: "slices", head: "SLICES" },
+      ]),
+    footer: { text: "same colour thresholds apply to every number" },
+  };
+
+  return [ranking, stats];
+}
+
+/** Kept for callers that want a single embed, such as the empty-board case. */
+async function boardEmbed(env, page = 1) {
+  return (await boardEmbeds(env, page))[0];
 }
 
 async function playerEmbed(env, username) {
@@ -1635,21 +1667,21 @@ async function drawExpiredLotteries(env) {
 async function refreshBoardMessage(env) {
   if (!env.DISCORD_BOT_TOKEN || !env.BOARD_CHANNEL_ID) return;
 
-  const embed = await boardEmbed(env, 1);
+  const embeds = await boardEmbeds(env, 1);
 
   // Hash the parts that carry meaning, but never the timestamp -- including it would make every
   // tick look like a change and rewrite the message every five minutes forever.
-  const hash = await sha256Hex(JSON.stringify({
-    title: embed.title,
-    description: embed.description,
-    fields: embed.fields,
-  }));
+  // Hash every panel's meaningful content, but never the timestamp -- including it would make
+  // each tick look like a change and rewrite the message forever.
+  const hash = await sha256Hex(JSON.stringify(
+    embeds.map((e) => ({ title: e.title, description: e.description, fields: e.fields }))
+  ));
 
   const previous = await getMeta(env, "board_hash");
   if (previous === hash) return;
 
   const messageId = await getMeta(env, "board_message_id");
-  const payload = JSON.stringify({ embeds: [embed] });
+  const payload = JSON.stringify({ embeds });
 
   const headers = {
     "Authorization": `Bot ${env.DISCORD_BOT_TOKEN}`,
