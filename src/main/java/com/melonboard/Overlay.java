@@ -61,6 +61,7 @@ public final class Overlay {
                 { "planted", num(s.planted()) },
                 { "AutoFarmMelons", num(board.afkMelons()) },
                 { "points", board.points() >= 0 ? num(board.points()) : "--" },
+                { "slices", board.slices() >= 0 ? num(board.slices()) : "--" },
             };
         }
 

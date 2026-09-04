@@ -719,6 +719,20 @@ async function discordInteraction(request, env, ctx) {
   if (body.type === 2) {
     const name = body.data?.name;
 
+    // Keep the noise in one place if a channel is configured. /leaderboard is exempt so the board
+    // can still be pulled up wherever a conversation is happening.
+    const home = String(env.COMMANDS_CHANNEL_ID ?? "").trim();
+    if (home && name !== "leaderboard" && String(body.channel_id ?? "") !== home) {
+      return json({
+        type: 4,
+        data: ephemeral({
+          color: MELON_GREY,
+          title: "Wrong channel",
+          description: `_Use MelonBoard commands in <#${home}>._`,
+        }),
+      });
+    }
+
     if (name === "leaderboard") {
       const page = Math.max(1, Number(optionValue(body, "page") ?? 1));
       return json({ type: 4, data: { embeds: [await boardEmbed(env, page)] } });
@@ -730,6 +744,10 @@ async function discordInteraction(request, env, ctx) {
         type: 4,
         data: { embeds: [await linkEmbed(env, user)], flags: 64 },
       });
+    }
+
+    if (name === "wallet") {
+      return json({ type: 4, data: await walletEmbed(env, body) });
     }
 
     if (name === "shop") {
@@ -839,6 +857,28 @@ async function verifyDiscord(env, signature, timestamp, body) {
 const MELON_GREEN = 0x54b435;
 const MELON_PINK = 0xe8536f;
 const MELON_GREY = 0x6b7280;
+
+/**
+ * Point tiers, brightest at the top. Discord can only colour text inside an ```ansi code block,
+ * and only from this fixed palette -- there is no per-character colour in an embed -- so the
+ * standings table lives in one, trading markdown for colour.
+ *
+ * Ordered high to low; the first threshold a score clears wins.
+ */
+const POINT_TIERS = [
+  { at: 1_000_000_000, ansi: "\u001b[1;31m", name: "bright red" },
+  { at: 1_000_000,     ansi: "\u001b[1;32m", name: "lime green" },
+  { at: 100_000,       ansi: "\u001b[1;33m", name: "yellow" },
+  { at: 10_000,        ansi: "\u001b[1;37m", name: "white" },
+];
+
+const ANSI_RESET = "\u001b[0m";
+
+/** Wraps a formatted number in its tier colour. Below 10k it is left at the default. */
+function colourPoints(points, text) {
+  const tier = POINT_TIERS.find((t) => points >= t.at);
+  return tier ? tier.ansi + text + ANSI_RESET : text;
+}
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -952,31 +992,27 @@ async function boardEmbed(env, page = 1) {
     };
   }
 
-  const best = players[0].points || 0;
-  const podium = [];
-  const rest = [];
+  // Column widths come from the data so the table stays aligned whatever the names are.
+  const nameWidth = Math.max(6, ...players.map((p) => p.username.length));
+  const pointWidth = Math.max(6, ...players.map((p) => fmt(p.points).length));
 
-  players.forEach((p, i) => {
+  const header = "  #  " + "PLAYER".padEnd(nameWidth) + "  " +
+    "POINTS".padStart(pointWidth) + "   CHOP/PLACE/CRAFT/PLANT";
+
+  const rows = players.map((p, i) => {
     const rank = offset + i + 1;
-    const name = escapeMd(p.username);
+    const medal = rank <= 3 ? ["1.", "2.", "3."][rank - 1] : String(rank) + ".";
+    const pts = fmt(p.points).padStart(pointWidth);
 
-    if (rank <= 3) {
-      podium.push(
-        `${MEDALS[rank - 1]}  **${name}**  ·  \`${fmt(p.points)} pts\`\n` +
-        `\`${bar(p.points, best)}\`  ${fmt(p.mined)} chopped · ${fmt(p.placed)} placed · ` +
-        `${fmt(p.crafted)} crafted · ${fmt(p.planted)} planted` +
-        (p.afk > 0 ? ` · ${fmt(p.afk)} autofarm` : "")
-      );
-    } else {
-      rest.push(`\`${String(rank).padStart(2, " ")}\`  **${name}** — \`${fmt(p.points)}\``);
-    }
+    // Pad before colouring: the escape codes are zero-width on screen but not in .length, so
+    // padding a coloured string throws the columns out.
+    return " " + medal.padStart(3) + "  " + p.username.padEnd(nameWidth) + "  " +
+      colourPoints(p.points, pts) + "   " +
+      `${p.mined}/${p.placed}/${p.crafted}/${p.planted}` +
+      (p.afk > 0 ? ` (+${fmt(p.afk)} afk)` : "");
   });
 
-  // On page 2 and beyond nobody is on the podium, so the separator would lead with blank lines.
-  const blocks = [];
-  if (podium.length) blocks.push(podium.join("\n\n"));
-  if (rest.length) blocks.push(rest.join("\n"));
-  const description = blocks.join("\n\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n\n");
+  const description = "```ansi\n" + header + "\n" + rows.join("\n") + "\n```";
 
   // Community totals give the board a sense of scale that a list of names cannot.
   const totals = await env.DB.prepare(
@@ -1004,7 +1040,9 @@ async function boardEmbed(env, page = 1) {
         inline: true,
       },
     ],
-    footer: { text: "MelonBoard · updates every few minutes" },
+    footer: {
+      text: "10k white · 100k yellow · 1m lime · 1b red — MelonBoard",
+    },
     // Rendered natively by Discord as a local time, which beats a hand-formatted UTC string.
     timestamp: new Date().toISOString(),
   };
@@ -1093,6 +1131,54 @@ const SHOP_ROLES = [
   { key: "tycoon",   roleId: "1545515822129225799", label: "Melon Tycoon",   price: 100000000 },
   { key: "overlord", roleId: "1545515823374794754", label: "Melon Overlord", price: 1000000000 },
 ];
+
+/**
+ * A player's own balances. Points appear twice on purpose: lifetime is what ranks you and never
+ * falls, spendable is what the shop charges. Showing only one of them makes buying something look
+ * like losing progress.
+ */
+async function walletEmbed(env, body) {
+  const user = body.member?.user ?? body.user ?? {};
+  const bal = await balanceOf(env, String(user.id ?? ""));
+
+  if (!bal) {
+    return ephemeral({
+      color: MELON_GREY,
+      author: { name: "MELON WALLET" },
+      title: "🍉  Not linked",
+      description: "_Run `/link`, then type the code in game to connect your accounts._",
+    });
+  }
+
+  const w = weights(env);
+  const rank = await rankOf(env, bal.lifetime, w);
+  const owned = new Set(body.member?.roles ?? []);
+  const roles = SHOP_ROLES.filter((r) => owned.has(r.roleId)).map((r) => r.label);
+
+  return ephemeral({
+    color: MELON_GREEN,
+    author: { name: "MELON WALLET" },
+    title: `🍉  ${escapeMd(bal.username)}`,
+    description:
+      "```ansi\n" +
+      "Spendable points  " + colourPoints(bal.points, fmt(bal.points)) + "\n" +
+      "Melon slices      " + fmt(bal.slices) + "\n" +
+      "```",
+    fields: [
+      {
+        name: "Lifetime points",
+        value: `\`${fmt(bal.lifetime)}\`  ·  rank **#${rank}**\n_ranks you; never falls_`,
+        inline: true,
+      },
+      {
+        name: "Owned roles",
+        value: roles.length ? roles.join("\n") : "_none yet — see `/shop`_",
+        inline: true,
+      },
+    ],
+    footer: { text: "Slices accrue while you play with the mod on" },
+  });
+}
 
 async function shopEmbed(env, body) {
   const user = body.member?.user ?? body.user ?? {};

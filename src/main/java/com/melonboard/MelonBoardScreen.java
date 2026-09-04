@@ -45,7 +45,7 @@ public class MelonBoardScreen extends Screen {
     private static final int R_KEY = 4;
     private static final int R_LINK = 5;
     private static final int SETTING_ROWS = 6;
-    private static final int STAT_ROWS = 7;
+    private static final int STAT_ROWS = 8;
 
     private final MelonBoard board;
 
@@ -124,7 +124,8 @@ public class MelonBoardScreen extends Screen {
             statRow(g, f, base + 3, "planted", num(s.planted()));
             statRow(g, f, base + 4, "AutoFarmMelons", num(board.afkMelons()));
             statRow(g, f, base + 5, "points",  board.points() >= 0 ? num(board.points()) : "--");
-            statRow(g, f, base + 6, "rank",    board.rank() > 0 ? "#" + board.rank() : "--");
+            statRow(g, f, base + 6, "slices",  board.slices() >= 0 ? num(board.slices()) : "--");
+            statRow(g, f, base + 7, "rank",    board.rank() > 0 ? "#" + board.rank() : "--");
         }
 
         // Footer button.

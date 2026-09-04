@@ -98,6 +98,8 @@ public class MelonBoard implements ClientModInitializer {
     /** Last standing the API told us. -1 / 0 mean "not known yet", not "zero". */
     private volatile long points = -1;
     private volatile int rank = 0;
+    /** Melon slices, as last reported. -1 means not known yet. */
+    private volatile long slices = -1;
 
     /** Edge detection for the settings-window key. */
     private boolean openKeyWasDown = false;
@@ -290,6 +292,7 @@ public class MelonBoard implements ClientModInitializer {
             if (res.outcome() == BoardClient.Outcome.OK) {
                 points = res.points();
                 rank = res.rank();
+                if (res.slices() >= 0) slices = res.slices();
             }
         });
     }
@@ -347,6 +350,7 @@ public class MelonBoard implements ClientModInitializer {
                     config.save();
                     points = res.points();
                     rank = res.rank();
+                    if (res.slices() >= 0) slices = res.slices();
                     backoffTicks = 0;
                     if (announce) {
                         announcedThisSession = true;
@@ -534,6 +538,10 @@ public class MelonBoard implements ClientModInitializer {
 
     public int rank() {
         return rank;
+    }
+
+    public long slices() {
+        return slices;
     }
 
     /** One short line explaining why there are no numbers yet. */

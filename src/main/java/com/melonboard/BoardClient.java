@@ -71,7 +71,8 @@ public final class BoardClient {
 
     public record AuthResult(Outcome outcome, String token, long expires, String message) {}
 
-    public record SubmitResult(Outcome outcome, long points, int rank, String message) {}
+    public record SubmitResult(Outcome outcome, long points, int rank, long slices,
+                               String message) {}
 
     private final HttpClient http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
@@ -185,7 +186,7 @@ public final class BoardClient {
                 done.accept(doSubmit(endpoint, token, stats));
             } catch (Throwable t) {
                 LOG.warn("[MelonBoard] submit threw", t);
-                done.accept(new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, t.toString()));
+                done.accept(new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, 0, t.toString()));
             }
         });
     }
@@ -205,17 +206,17 @@ public final class BoardClient {
         try {
             res = post(endpoint + "/submit", GSON.toJson(body), token);
         } catch (Exception e) {
-            return new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, e.toString());
+            return new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, 0, e.toString());
         }
 
         if (res.statusCode() == 426) {
-            return new SubmitResult(Outcome.OUTDATED, 0, 0, describeOutdated(res.body()));
+            return new SubmitResult(Outcome.OUTDATED, 0, 0, 0, describeOutdated(res.body()));
         }
         if (res.statusCode() == 401 || res.statusCode() == 403) {
-            return new SubmitResult(Outcome.UNAUTHORIZED, 0, 0, brief(res.body()));
+            return new SubmitResult(Outcome.UNAUTHORIZED, 0, 0, 0, brief(res.body()));
         }
         if (res.statusCode() != 200) {
-            return new SubmitResult(Outcome.REJECTED, 0, 0,
+            return new SubmitResult(Outcome.REJECTED, 0, 0, 0,
                 res.statusCode() + ": " + brief(res.body()));
         }
 
@@ -223,9 +224,10 @@ public final class BoardClient {
             JsonObject j = GSON.fromJson(res.body(), JsonObject.class);
             long points = j.has("points") ? j.get("points").getAsLong() : 0;
             int rank = j.has("rank") ? j.get("rank").getAsInt() : 0;
-            return new SubmitResult(Outcome.OK, points, rank, null);
+            long slices = j.has("slices") ? j.get("slices").getAsLong() : -1;
+            return new SubmitResult(Outcome.OK, points, rank, slices, null);
         } catch (Exception e) {
-            return new SubmitResult(Outcome.REJECTED, 0, 0, "reply unreadable: " + e);
+            return new SubmitResult(Outcome.REJECTED, 0, 0, 0, "reply unreadable: " + e);
         }
     }
 
@@ -240,7 +242,7 @@ public final class BoardClient {
             try {
                 done.accept(doMe(endpoint, token));
             } catch (Throwable t) {
-                done.accept(new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, t.toString()));
+                done.accept(new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, 0, t.toString()));
             }
         });
     }
@@ -250,14 +252,14 @@ public final class BoardClient {
         try {
             res = get(endpoint + "/me", token);
         } catch (Exception e) {
-            return new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, e.toString());
+            return new SubmitResult(Outcome.NETWORK_ERROR, 0, 0, 0, e.toString());
         }
 
         if (res.statusCode() == 401 || res.statusCode() == 403) {
-            return new SubmitResult(Outcome.UNAUTHORIZED, 0, 0, brief(res.body()));
+            return new SubmitResult(Outcome.UNAUTHORIZED, 0, 0, 0, brief(res.body()));
         }
         if (res.statusCode() != 200) {
-            return new SubmitResult(Outcome.REJECTED, 0, 0, res.statusCode() + ": " + brief(res.body()));
+            return new SubmitResult(Outcome.REJECTED, 0, 0, 0, res.statusCode() + ": " + brief(res.body()));
         }
 
         try {
@@ -265,9 +267,10 @@ public final class BoardClient {
             return new SubmitResult(Outcome.OK,
                 j.has("points") ? j.get("points").getAsLong() : 0,
                 j.has("rank") ? j.get("rank").getAsInt() : 0,
+                j.has("slices") ? j.get("slices").getAsLong() : -1,
                 null);
         } catch (Exception e) {
-            return new SubmitResult(Outcome.REJECTED, 0, 0, "reply unreadable: " + e);
+            return new SubmitResult(Outcome.REJECTED, 0, 0, 0, "reply unreadable: " + e);
         }
     }
 

@@ -37,6 +37,10 @@ const commands = [
     description: "Link your Discord account to your Minecraft account",
   },
   {
+    name: "wallet",
+    description: "Your points, melon slices and owned roles",
+  },
+  {
     name: "shop",
     description: "Browse cosmetic roles and see your balance",
   },
