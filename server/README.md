@@ -100,11 +100,16 @@ For a jar other people will download, set `DEFAULT_ENDPOINT` in
 
 | Route | Purpose |
 |---|---|
-| `POST /auth/challenge` | issues a random `serverId` for the Mojang handshake |
-| `POST /auth/verify` | checks Mojang's `hasJoined`, returns a 24h bearer token |
+| `POST /auth/challenge` | issues a random one-time challenge to be signed |
+| `POST /auth/verify` | verifies the Mojang profile-key signatures, returns a 24h bearer token |
 | `POST /submit` | absolute stat totals; returns points and rank |
+| `POST /link/claim` | binds a Discord account to a Minecraft account |
+| `GET /me` | the caller's own standing |
 | `POST /discord` | Discord interactions (signature-verified) |
 | `GET /board.json` | current standings as JSON, handy for debugging |
+
+Every client request carries `X-MelonBoard-Protocol`; anything below `MIN_PROTOCOL` is refused
+with a 426 so out-of-date builds cannot fall back to an older handshake.
 
 ## Changing the point values
 

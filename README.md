@@ -43,10 +43,20 @@ never accepted from the client — if it lived in the config file, deleting that
 you your entire lifetime history.
 
 **Your username is proven, not claimed.** The endpoint URL is readable by anyone who opens the
-jar, so a self-reported username would let anyone post any score as anyone. Instead the mod
-completes the same `joinServer` handshake a real server uses, and the API confirms it with
-Mojang's `hasJoined` before issuing a token. Only the account holder can do that. It needs a
-premium account.
+jar, so a self-reported username would let anyone post any score as anyone. Instead the mod signs
+a one-time challenge with the private half of the key pair Mojang issues for chat signing, and
+sends its public key along with Mojang's certificate of that key. The API checks Mojang's
+signature over the key — which binds it to your UUID — and then your signature over the
+challenge.
+
+It never contacts Mojang to do this, which is what makes it possible: Mojang's session server
+refuses requests from the hosting the API runs on, so the usual `joinServer`/`hasJoined` handshake
+could not work at all. It needs a premium account with chat signing enabled, and your access token
+is never read or sent anywhere.
+
+Clients also send a protocol version, and the API refuses anything older than its minimum. When a
+security change alters what the client must send, older builds are rejected outright rather than
+quietly continuing on a weaker path.
 
 This does not make scores unforgeable — a patched mod can report any numbers, and no client-side
 tracker can prevent that. It makes every submission attributable to one proven account, which can
