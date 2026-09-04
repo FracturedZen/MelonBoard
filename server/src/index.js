@@ -987,31 +987,54 @@ function scoringLine(w) {
 const HEAD = "\u001b[1;37m";
 const RULE = "\u001b[0;32m";
 
-/** One aligned, colour-tiered table. Columns clear their headers as well as their values. */
-function statTable(players, offset, columns) {
-  const nameW = Math.min(16, Math.max("FARMER".length,
-    ...players.map((p) => p.username.length)));
+/**
+ * One self-contained block per player, rather than a wide table.
+ *
+ * Six stat columns cannot fit an embed's width, and splitting them across two tables reads as one
+ * table cut in half and stacked underneath itself. A block per player keeps each person's numbers
+ * together, stays about 32 columns wide, and grows downwards instead of sideways.
+ *
+ * Values share a width across every player so the columns line up down the whole panel, and each
+ * is colour-tiered on the same thresholds as the score.
+ */
+function playerCards(players, offset) {
+  const LEFT = [
+    { key: "mined", label: "chop" },
+    { key: "placed", label: "place" },
+    { key: "crafted", label: "craft" },
+  ];
+  const RIGHT = [
+    { key: "planted", label: "plant" },
+    { key: "afk", label: "afk" },
+    { key: "slices", label: "slices" },
+  ];
 
-  for (const c of columns) {
-    c.w = Math.max(c.head.length, ...players.map((p) => fmt(p[c.key] ?? 0).length));
-  }
-
-  const header = HEAD + "FARMER".padEnd(nameW) +
-    columns.map((c) => "  " + c.head.padStart(c.w)).join("") + ANSI_RESET;
-
-  const width = nameW + columns.reduce((n, c) => n + 2 + c.w, 0);
-
-  const rows = players.map((p) =>
-    p.username.slice(0, nameW).padEnd(nameW) +
-    columns.map((c) => {
-      const value = p[c.key] ?? 0;
-      return "  " + colourPoints(value, fmt(value).padStart(c.w));
-    }).join("")
+  const labelW = Math.max(...[...LEFT, ...RIGHT].map((c) => c.label.length));
+  const widthOf = (set) => Math.max(
+    ...set.flatMap((c) => players.map((p) => fmt(p[c.key] ?? 0).length))
   );
+  const leftW = widthOf(LEFT);
+  const rightW = widthOf(RIGHT);
 
-  return "```ansi\n" + header + "\n" +
-    RULE + "-".repeat(width) + ANSI_RESET + "\n" +
-    rows.join("\n") + "\n```";
+  const cards = players.map((p, i) => {
+    const heading = HEAD + String(offset + i + 1) + ". " +
+      p.username.slice(0, 16) + ANSI_RESET;
+
+    const lines = LEFT.map((l, n) => {
+      const r = RIGHT[n];
+      const lv = p[l.key] ?? 0;
+      const rv = p[r.key] ?? 0;
+
+      return "  " + l.label.padEnd(labelW) + " " +
+        colourPoints(lv, fmt(lv).padStart(leftW)) +
+        "   " + r.label.padEnd(labelW) + " " +
+        colourPoints(rv, fmt(rv).padStart(rightW));
+    });
+
+    return heading + "\n" + lines.join("\n");
+  });
+
+  return "```ansi\n" + cards.join("\n\n") + "\n```";
 }
 
 /**
@@ -1089,7 +1112,6 @@ async function boardEmbeds(env, page = 1) {
         inline: true,
       },
     ],
-    footer: { text: "score colour · 10k white · 100k yellow · 1m lime · 1b red" },
     timestamp: new Date().toISOString(),
   };
 
@@ -1097,19 +1119,7 @@ async function boardEmbeds(env, page = 1) {
   const stats = {
     color: MELON_PINK,
     title: "🍈  Player Stats",
-    description:
-      statTable(players, offset, [
-        { key: "mined", head: "CHOP" },
-        { key: "placed", head: "PLACE" },
-        { key: "crafted", head: "CRAFT" },
-      ]) + "
-" +
-      statTable(players, offset, [
-        { key: "planted", head: "PLANT" },
-        { key: "afk", head: "AFK" },
-        { key: "slices", head: "SLICES" },
-      ]),
-    footer: { text: "same colour thresholds apply to every number" },
+    description: playerCards(players, offset),
   };
 
   return [ranking, stats];
