@@ -59,7 +59,7 @@ GUILD_ID = "1537368810787442728"
 
 # Channel MelonBoard commands must be used in. Leave empty to allow them anywhere.
 # /leaderboard is always allowed everywhere so the board can be pulled up mid-conversation.
-COMMANDS_CHANNEL_ID = ""
+COMMANDS_CHANNEL_ID = "1545503905142800474"
 
 # Channel the bot posts giveaways into.
 GIVEAWAY_CHANNEL_ID = "1545512752292831412"

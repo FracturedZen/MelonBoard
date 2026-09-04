@@ -672,7 +672,8 @@ async function topPlayers(env, limit, offset = 0) {
             (t_mined - b_mined)     AS mined,
             (t_crafted - b_crafted) AS crafted,
             (t_planted - b_planted) AS planted,
-            (t_afk - b_afk)             AS afk
+            (t_afk - b_afk)             AS afk,
+            (watched_ticks / ${Math.max(1, Math.floor(numberFrom(env.TICKS_PER_SLICE, 1200)))}) AS slices
        FROM players
       WHERE banned = 0
       ORDER BY points DESC, username ASC
@@ -992,27 +993,67 @@ async function boardEmbed(env, page = 1) {
     };
   }
 
-  // Column widths come from the data so the table stays aligned whatever the names are.
-  const nameWidth = Math.max(6, ...players.map((p) => p.username.length));
-  const pointWidth = Math.max(6, ...players.map((p) => fmt(p.points).length));
+  // A framed panel rather than a bare table. Everything is padded BEFORE colour is applied:
+  // escape codes are zero width on screen but count in String.length, so padding afterwards
+  // shreds the alignment.
+  const RIND = "\u001b[0;32m";     // melon rind, for the frame
+  const FLESH = "\u001b[0;31m";    // melon flesh, for the header rule
+  const HEAD = "\u001b[1;37m";
+  const PULP = "[0;35m";     // melon flesh, for the slice column
 
-  const header = "  #  " + "PLAYER".padEnd(nameWidth) + "  " +
-    "POINTS".padStart(pointWidth) + "   CHOP/PLACE/CRAFT/PLANT";
+  const nameW = Math.max(10, ...players.map((p) => p.username.length));
+  const ptsW = Math.max(6, ...players.map((p) => fmt(p.points).length));
+  const slcW = Math.max(6, ...players.map((p) => fmt(p.slices ?? 0).length));
 
-  const rows = players.map((p, i) => {
+  // rank(3) + gaps + columns, matching the row template below exactly.
+  const inner = 2 + 3 + 2 + nameW + 2 + ptsW + 2 + slcW + 1;
+  const rule = "─".repeat(inner);
+
+  const frame = (l, mid, r) => RIND + l + mid + r + ANSI_RESET;
+
+  const headerRow =
+    RIND + "│" + ANSI_RESET +
+    "  " + HEAD + "#".padEnd(3) + ANSI_RESET +
+    "  " + HEAD + "FARMER".padEnd(nameW) + ANSI_RESET +
+    "  " + HEAD + "POINTS".padStart(ptsW) + ANSI_RESET +
+    "  " + HEAD + "SLICES".padStart(slcW) + ANSI_RESET +
+    " " + RIND + "│" + ANSI_RESET;
+
+  const bodyRows = players.map((p, i) => {
     const rank = offset + i + 1;
-    const medal = rank <= 3 ? ["1.", "2.", "3."][rank - 1] : String(rank) + ".";
-    const pts = fmt(p.points).padStart(pointWidth);
 
-    // Pad before colouring: the escape codes are zero-width on screen but not in .length, so
-    // padding a coloured string throws the columns out.
-    return " " + medal.padStart(3) + "  " + p.username.padEnd(nameWidth) + "  " +
-      colourPoints(p.points, pts) + "   " +
-      `${p.mined}/${p.placed}/${p.crafted}/${p.planted}` +
-      (p.afk > 0 ? ` (+${fmt(p.afk)} afk)` : "");
+    // Pad first, colour second.
+    const rankCell = String(rank).padEnd(3);
+    const nameCell = p.username.padEnd(nameW);
+    const ptsCell = fmt(p.points).padStart(ptsW);
+    const slcCell = fmt(p.slices ?? 0).padStart(slcW);
+
+    // Podium ranks get a gold marker; everyone else stays plain so the eye goes to the scores.
+    const rankPainted = rank <= 3 ? "\u001b[1;33m" + rankCell + ANSI_RESET : rankCell;
+
+    return RIND + "│" + ANSI_RESET +
+      "  " + rankPainted +
+      "  " + nameCell +
+      "  " + colourPoints(p.points, ptsCell) +
+      "  " + PULP + slcCell + ANSI_RESET +
+      " " + RIND + "│" + ANSI_RESET;
   });
 
-  const description = "```ansi\n" + header + "\n" + rows.join("\n") + "\n```";
+  // Medals and bold only render OUTSIDE a code block, so the podium sits above the panel:
+  // the markdown gives it warmth, the panel gives it colour and alignment.
+  const podium = players.slice(0, 3).map((p, n) =>
+    MEDALS[n] + "  **" + escapeMd(p.username) + "** " + "`" + fmt(p.points) + "`"
+  ).join("   ");
+
+  const description =
+    (offset === 0 && podium ? podium + "\n\n" : "") +
+    "```ansi\n" +
+    frame("╭", rule, "╮") + "\n" +
+    headerRow + "\n" +
+    RIND + "├" + ANSI_RESET + FLESH + rule + ANSI_RESET + RIND + "┤" + ANSI_RESET + "\n" +
+    bodyRows.join("\n") + "\n" +
+    frame("╰", rule, "╯") +
+    "\n```";
 
   // Community totals give the board a sense of scale that a list of names cannot.
   const totals = await env.DB.prepare(
@@ -1030,7 +1071,7 @@ async function boardEmbed(env, page = 1) {
   return {
     color: MELON_GREEN,
     author: { name: "MELON LEADERBOARD" },
-    title: page > 1 ? `🍉  Page ${page}` : "🍉  Top Melon Farmers",
+    title: page > 1 ? `🍉  Melon Farmers · page ${page}` : "🍉  Top Melon Farmers",
     description,
     fields: [
       { name: "Scoring", value: scoringLine(w), inline: true },
@@ -1041,7 +1082,7 @@ async function boardEmbed(env, page = 1) {
       },
     ],
     footer: {
-      text: "10k white · 100k yellow · 1m lime · 1b red — MelonBoard",
+      text: "score colour · 10k white · 100k yellow · 1m lime · 1b red",
     },
     // Rendered natively by Discord as a local time, which beats a hand-formatted UTC string.
     timestamp: new Date().toISOString(),
