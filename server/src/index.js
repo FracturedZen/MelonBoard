@@ -993,84 +993,74 @@ async function boardEmbed(env, page = 1) {
     };
   }
 
-  // A framed panel carrying every stat. Everything is padded BEFORE colour is applied: escape
-  // codes are zero width on screen but count in String.length, so padding a coloured string
-  // shreds the alignment.
-  const RIND = "\u001b[0;32m";     // melon rind, for the frame
-  const FLESH = "\u001b[0;31m";    // melon flesh, for the header rule
+  // ASCII ONLY, and no box-drawing characters.
+  //
+  // Discord's code-block font does not give box-drawing glyphs the same advance width as ASCII on
+  // every platform, so a frame built from them skews even when every row has an identical
+  // character count -- which is why a width check passes while the rendered panel looks broken.
+  // Plain hyphens and spaces are the only things guaranteed to line up everywhere.
+  //
+  // Width matters too: code blocks scroll rather than wrap, so anything much past ~60 columns is
+  // unreadable on a phone. The action columns therefore drop thousands separators, which only
+  // POINTS really needs.
   const HEAD = "\u001b[1;37m";
-  const PULP = "\u001b[0;35m";     // melon flesh, for the slice column
-  const DIM = "\u001b[0;37m";      // the action columns, quieter than the score
+  const RULE = "\u001b[0;32m";     // melon rind
+  const PULP = "\u001b[0;35m";     // melon flesh, for slices
+  const DIM = "\u001b[0;37m";
 
-  // Columns size to the data rather than to the widest possible value, so a board of short names
-  // stays narrow instead of always being padded out to 16-character usernames.
+  const plain = (n) => String(n ?? 0);
+
   const cols = [
     { key: "mined",   head: "CHOP" },
-    { key: "placed",  head: "PLACE" },
-    { key: "crafted", head: "CRAFT" },
-    { key: "planted", head: "PLANT" },
+    { key: "placed",  head: "PLCE" },
+    { key: "crafted", head: "CRFT" },
+    { key: "planted", head: "PLNT" },
     { key: "afk",     head: "AFK" },
+    { key: "slices",  head: "SLCE" },
   ];
 
   const nameW = Math.max(6, ...players.map((p) => p.username.length));
   const ptsW = Math.max(6, ...players.map((p) => fmt(p.points).length));
-  const slcW = Math.max(6, ...players.map((p) => fmt(p.slices ?? 0).length));
   for (const c of cols) {
-    c.w = Math.max(c.head.length, ...players.map((p) => fmt(p[c.key] ?? 0).length));
+    c.w = Math.max(c.head.length, ...players.map((p) => plain(p[c.key]).length));
   }
 
-  const rankW = 3;
-  const gap = "  ";
+  const rankW = String(offset + players.length).length + 1;
 
-  // Width of one row's contents, mirroring exactly how the rows are assembled below.
-  const inner =
-    gap.length + rankW +
-    gap.length + nameW +
-    gap.length + ptsW +
-    cols.reduce((n, c) => n + gap.length + c.w, 0) +
-    gap.length + slcW +
-    1;
+  const header =
+    HEAD + "#".padEnd(rankW) + " " + "FARMER".padEnd(nameW) + " " +
+    "POINTS".padStart(ptsW) + cols.map((c) => "  " + c.head.padStart(c.w)).join("") +
+    ANSI_RESET;
 
-  const rule = "─".repeat(inner);
+  const width =
+    rankW + 1 + nameW + 1 + ptsW + cols.reduce((n, c) => n + 2 + c.w, 0);
 
-  const headerRow =
-    RIND + "│" + ANSI_RESET +
-    gap + HEAD + "#".padEnd(rankW) + ANSI_RESET +
-    gap + HEAD + "FARMER".padEnd(nameW) + ANSI_RESET +
-    gap + HEAD + "POINTS".padStart(ptsW) + ANSI_RESET +
-    cols.map((c) => gap + HEAD + c.head.padStart(c.w) + ANSI_RESET).join("") +
-    gap + HEAD + "SLICES".padStart(slcW) + ANSI_RESET +
-    " " + RIND + "│" + ANSI_RESET;
-
-  const bodyRows = players.map((p, i) => {
+  const rows = players.map((p, i) => {
     const rank = offset + i + 1;
 
-    const rankCell = String(rank).padEnd(rankW);
-    const painted = rank <= 3 ? "\u001b[1;33m" + rankCell + ANSI_RESET : rankCell;
-
-    return RIND + "│" + ANSI_RESET +
-      gap + painted +
-      gap + p.username.padEnd(nameW) +
-      gap + colourPoints(p.points, fmt(p.points).padStart(ptsW)) +
-      cols.map((c) => gap + DIM + fmt(p[c.key] ?? 0).padStart(c.w) + ANSI_RESET).join("") +
-      gap + PULP + fmt(p.slices ?? 0).padStart(slcW) + ANSI_RESET +
-      " " + RIND + "│" + ANSI_RESET;
+    return (rank <= 3 ? "\u001b[1;33m" + String(rank).padEnd(rankW) + ANSI_RESET
+                      : String(rank).padEnd(rankW)) +
+      " " + p.username.padEnd(nameW) +
+      " " + colourPoints(p.points, fmt(p.points).padStart(ptsW)) +
+      cols.map((c) => {
+        const cell = plain(p[c.key]).padStart(c.w);
+        const tint = c.key === "slices" ? PULP : DIM;
+        return "  " + tint + cell + ANSI_RESET;
+      }).join("");
   });
 
-  // Medals and bold only render OUTSIDE a code block, so the podium sits above the panel: the
-  // markdown gives it warmth, the panel gives it colour and alignment.
+  // Medals and bold render only OUTSIDE a code block; colour renders only inside one. Using both
+  // is the only way to have both.
   const podium = players.slice(0, 3).map((p, n) =>
-    MEDALS[n] + "  **" + escapeMd(p.username) + "** `" + fmt(p.points) + "`"
-  ).join("   ");
+    MEDALS[n] + " **" + escapeMd(p.username) + "** `" + fmt(p.points) + "`"
+  ).join("  ");
 
   const description =
     (offset === 0 && podium ? podium + "\n\n" : "") +
     "```ansi\n" +
-    RIND + "╭" + rule + "╮" + ANSI_RESET + "\n" +
-    headerRow + "\n" +
-    RIND + "├" + ANSI_RESET + FLESH + rule + ANSI_RESET + RIND + "┤" + ANSI_RESET + "\n" +
-    bodyRows.join("\n") + "\n" +
-    RIND + "╰" + rule + "╯" + ANSI_RESET +
+    header + "\n" +
+    RULE + "-".repeat(width) + ANSI_RESET + "\n" +
+    rows.join("\n") +
     "\n```";
 
   // Community totals give the board a sense of scale that a list of names cannot.
