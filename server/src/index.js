@@ -993,67 +993,51 @@ async function boardEmbed(env, page = 1) {
     };
   }
 
-  // ASCII ONLY, and no box-drawing characters.
+  // WIDTH IS THE CONSTRAINT, not character count.
   //
-  // Discord's code-block font does not give box-drawing glyphs the same advance width as ASCII on
-  // every platform, so a frame built from them skews even when every row has an identical
-  // character count -- which is why a width check passes while the rendered panel looks broken.
-  // Plain hyphens and spaces are the only things guaranteed to line up everywhere.
+  // A code block inside an embed WRAPS rather than scrolls, and an embed is narrower than a
+  // normal message, so anything past roughly 40 columns folds onto the next line and looks
+  // broken. Six stat columns cannot fit in that, so only rank, name and score live in the
+  // aligned block -- the part that needs colour and alignment -- and the per-player stats move
+  // into a field below, where wrapping is graceful instead of ruinous.
   //
-  // Width matters too: code blocks scroll rather than wrap, so anything much past ~60 columns is
-  // unreadable on a phone. The action columns therefore drop thousands separators, which only
-  // POINTS really needs.
+  // ASCII only: Discord's code-block font does not give box-drawing glyphs the same advance
+  // width as ASCII, so a frame built from them skews even when every row is the same length.
   const HEAD = "\u001b[1;37m";
-  const RULE = "\u001b[0;32m";     // melon rind
-  const PULP = "\u001b[0;35m";     // melon flesh, for slices
-  const DIM = "\u001b[0;37m";
+  const RULE = "\u001b[0;32m";
 
-  const plain = (n) => String(n ?? 0);
-
-  const cols = [
-    { key: "mined",   head: "CHOP" },
-    { key: "placed",  head: "PLCE" },
-    { key: "crafted", head: "CRFT" },
-    { key: "planted", head: "PLNT" },
-    { key: "afk",     head: "AFK" },
-    { key: "slices",  head: "SLCE" },
-  ];
-
-  const nameW = Math.max(6, ...players.map((p) => p.username.length));
-  const ptsW = Math.max(6, ...players.map((p) => fmt(p.points).length));
-  for (const c of cols) {
-    c.w = Math.max(c.head.length, ...players.map((p) => plain(p[c.key]).length));
-  }
-
-  const rankW = String(offset + players.length).length + 1;
+  // Column widths must clear the HEADER as well as the values, or the heading overhangs its own
+  // column by a character and everything below it reads as misaligned.
+  const nameW = Math.min(16, Math.max("FARMER".length, ...players.map((p) => p.username.length)));
+  const ptsW = Math.max("POINTS".length, ...players.map((p) => fmt(p.points).length));
+  const rankW = Math.max(1, String(offset + players.length).length);
 
   const header =
-    HEAD + "#".padEnd(rankW) + " " + "FARMER".padEnd(nameW) + " " +
-    "POINTS".padStart(ptsW) + cols.map((c) => "  " + c.head.padStart(c.w)).join("") +
-    ANSI_RESET;
+    HEAD + "#".padStart(rankW) + "  " + "FARMER".padEnd(nameW) + "  " +
+    "POINTS".padStart(ptsW) + ANSI_RESET;
 
-  const width =
-    rankW + 1 + nameW + 1 + ptsW + cols.reduce((n, c) => n + 2 + c.w, 0);
+  const width = rankW + 2 + nameW + 2 + ptsW;
 
   const rows = players.map((p, i) => {
     const rank = offset + i + 1;
+    const rankCell = String(rank).padStart(rankW);
 
-    return (rank <= 3 ? "\u001b[1;33m" + String(rank).padEnd(rankW) + ANSI_RESET
-                      : String(rank).padEnd(rankW)) +
-      " " + p.username.padEnd(nameW) +
-      " " + colourPoints(p.points, fmt(p.points).padStart(ptsW)) +
-      cols.map((c) => {
-        const cell = plain(p[c.key]).padStart(c.w);
-        const tint = c.key === "slices" ? PULP : DIM;
-        return "  " + tint + cell + ANSI_RESET;
-      }).join("");
+    return (rank <= 3 ? "\u001b[1;33m" + rankCell + ANSI_RESET : rankCell) +
+      "  " + p.username.slice(0, nameW).padEnd(nameW) +
+      "  " + colourPoints(p.points, fmt(p.points).padStart(ptsW));
   });
 
-  // Medals and bold render only OUTSIDE a code block; colour renders only inside one. Using both
-  // is the only way to have both.
+  // Medals and bold render only OUTSIDE a code block; colour renders only inside one.
   const podium = players.slice(0, 3).map((p, n) =>
     MEDALS[n] + " **" + escapeMd(p.username) + "** `" + fmt(p.points) + "`"
   ).join("  ");
+
+  // Free-flowing text, so a long line wraps tidily instead of breaking an alignment.
+  const breakdown = players.map((p, i) =>
+    "`" + String(offset + i + 1).padStart(rankW) + "` **" + escapeMd(p.username) + "** — " +
+    `${fmt(p.mined)} chop · ${fmt(p.placed)} place · ${fmt(p.crafted)} craft · ` +
+    `${fmt(p.planted)} plant · ${fmt(p.afk ?? 0)} afk · ${fmt(p.slices ?? 0)} 🍈`
+  ).join("\n");
 
   const description =
     (offset === 0 && podium ? podium + "\n\n" : "") +
@@ -1082,6 +1066,13 @@ async function boardEmbed(env, page = 1) {
     title: page > 1 ? `🍉  Melon Farmers · page ${page}` : "🍉  Top Melon Farmers",
     description,
     fields: [
+      // Discord caps a field value at 1024 characters; 15 players of breakdown fits comfortably,
+      // but truncate rather than have the whole embed rejected if it ever does not.
+      {
+        name: "Stats",
+        value: breakdown.length > 1000 ? breakdown.slice(0, 1000) + "\n…" : breakdown,
+        inline: false,
+      },
       { name: "Scoring", value: scoringLine(w), inline: true },
       {
         name: "Community",
