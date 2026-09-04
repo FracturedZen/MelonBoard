@@ -1,0 +1,59 @@
+name: Deploy Worker
+
+# Deploys the API whenever the server changes on main.
+#
+# REQUIRES a repository secret named CLOUDFLARE_API_TOKEN. Until that exists this job stops with a
+# clear message instead of failing noisily on every push -- deploying by hand still works.
+#
+# Create the token at:
+#   Cloudflare dashboard -> My Profile -> API Tokens -> Create Token -> "Edit Cloudflare Workers"
+# It needs Workers Scripts: Edit and D1: Edit. Then add it under:
+#   GitHub repo -> Settings -> Secrets and variables -> Actions -> New repository secret
+#
+# Note this deploys code only. Secrets such as DISCORD_BOT_TOKEN are set with
+# `wrangler secret put` and are never in the repo, so they are untouched by a deploy.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the token is configured
+        id: gate
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN is not set; skipping deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          node-version: "22"
+
+      # Bundle before deploying: a syntax error should fail here rather than halfway through a
+      # rollout.
+      - name: Check it bundles
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: server
+        run: npx --yes wrangler@4 deploy --dry-run --outdir /tmp/dry
+
+      - name: Deploy
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: server
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx --yes wrangler@4 deploy

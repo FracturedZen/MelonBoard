@@ -1,0 +1,64 @@
+name = "melonboard"
+main = "src/index.js"
+
+# Recent enough that WebCrypto exposes Ed25519 under its standard name, which the Discord
+# signature check needs. Do not lower this without reading verifyDiscord() first.
+compatibility_date = "2025-09-01"
+
+# Fill database_id in from the output of:
+#   wrangler d1 create melonboard
+[[d1_databases]]
+binding = "DB"
+database_name = "melonboard"
+database_id = "1e40f942-2c09-4635-abf2-0be2de0f67e3"
+
+# Backstop only: the board is refreshed the moment a submission lands, so this exists to catch
+# what that misses -- a deleted message needing a repost, or a submission whose refresh failed.
+# The handler edits only when the standings hash actually changed, so most ticks do nothing.
+[triggers]
+crons = ["*/2 * * * *"]
+
+[vars]
+# Points per action. These are read at query time, so changing one here and redeploying
+# re-scores the entire board consistently -- no migration, no client update.
+W_MINED   = "1"   # chop a melon
+W_PLACED  = "1"   # place a melon block
+W_CRAFTED = "5"   # craft a melon block
+W_PLANTED = "3"   # plant a melon seed
+
+# Oldest client protocol the API will talk to. Raise this whenever a security change alters what
+# the client must send: older jars then get a 426 telling their user to update, instead of
+# silently continuing on a weaker path. 3 = profile-key signature auth.
+MIN_PROTOCOL = "3"
+
+# Passive melon slices: ticks of observed play time per slice. 1200 ticks = one minute, so this
+# is "a slice a minute". Slices are a separate currency from points and are derived at read time,
+# so changing this re-values everyone at once.
+TICKS_PER_SLICE = "1200"
+
+# Melons broken by pistons in render distance are worth a fraction of a point; this many make one.
+AFK_PER_POINT = "500"
+
+# Rate sanity, in actions per second averaged since the player's previous submission.
+# Automation is allowed on this server, so these are set where no amount of legitimate play can
+# reach. Above SOFT we record a flag and accept; above HARD we reject.
+SOFT_RATE = "20"
+HARD_RATE = "200"
+
+# From the Discord developer portal -> your application. Neither is secret: the public key only
+# verifies Discord's signatures, it cannot produce them.
+DISCORD_APP_ID     = "1545309849594892288"
+DISCORD_PUBLIC_KEY = "b3136a6af649d22508249b0c468ad822610665fe7c0183ae2050045f762bfe37"
+
+# Channel the pinned leaderboard lives in. Leave empty to disable the live board and use only
+# the /leaderboard command.
+BOARD_CHANNEL_ID = "1545312460456722472"
+
+# The guild the bot grants purchased roles in.
+GUILD_ID = "1537368810787442728"
+
+# Channel the bot posts giveaways into.
+GIVEAWAY_CHANNEL_ID = "1545512752292831412"
+
+# DISCORD_BOT_TOKEN is a secret, not a var. Set it with:
+#   wrangler secret put DISCORD_BOT_TOKEN

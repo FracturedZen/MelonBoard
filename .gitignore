@@ -1,0 +1,22 @@
+# Gradle / build
+build/
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Loom
+run/
+.fabric/
+
+# Node / wrangler
+node_modules/
+.wrangler/
+package-lock.json
+
+# Secrets: the bot token belongs in `wrangler secret put`, never in the repo.
+.dev.vars
+.env
+
+# IDE
+.idea/
+*.iml
+.vscode/

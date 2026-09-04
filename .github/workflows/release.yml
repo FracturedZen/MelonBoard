@@ -1,0 +1,70 @@
+name: Release
+
+# Cutting a release:  git tag v1.1.0 && git push origin v1.1.0
+#
+# The jar is renamed to carry the tag, because every build otherwise produces the identically
+# named MelonBoard-1.0.0.jar and nobody can tell which one they are running -- which matters a
+# great deal when an old build is refused by the API for being out of date.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to release, e.g. v1.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: ./gradlew build --no-daemon
+
+      - name: Name the jar after the release
+        id: jar
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          SRC=$(ls build/libs/*.jar | grep -v -- '-sources' | head -1)
+          OUT="MelonBoard-${TAG}.jar"
+          cp "$SRC" "$OUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+          ls -lh "$OUT"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.jar.outputs.tag }}
+          files: ${{ steps.jar.outputs.file }}
+          generate_release_notes: true
+          body: |
+            ## Installing
+
+            1. Install [Fabric Loader](https://fabricmc.net/use/installer) for the matching
+               Minecraft version.
+            2. Drop `${{ steps.jar.outputs.file }}` into `.minecraft/mods/`.
+
+            No Fabric API and no other dependencies.
+
+            ## Updating
+
+            **Older builds stop working.** The API refuses any client below its minimum protocol
+            version, so a jar from before a security change is rejected with a message telling you
+            to update rather than silently failing. If the mod says it is out of date, replace the
+            jar with this one.

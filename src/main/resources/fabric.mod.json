@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "melonboard",
+  "version": "${version}",
+  "name": "MelonBoard",
+  "description": "Tracks your melon statistics on the server and reports them to the community Discord leaderboard.",
+  "authors": ["FracturedZen"],
+  "contact": {},
+  "environment": "client",
+  "mixins": [
+    "melonboard.mixins.json"
+  ],
+  "entrypoints": {
+    "client": [
+      "com.melonboard.MelonBoard"
+    ]
+  },
+  "depends": {
+    "java": ">=${jdk_version}",
+    "minecraft": "${minecraft_version}",
+    "fabricloader": ">=0.16.0"
+  }
+}

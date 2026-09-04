@@ -1,0 +1,44 @@
+name: Build
+
+# Every push and pull request. The jar is uploaded as an artifact so a build can be downloaded and
+# tested without cutting a release.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "server/**"
+      - "**/*.md"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain version lives in gradle/libs.versions.toml; keep this in step with it.
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Loom resolves Minecraft and Fabric from the network, so the first run on a cold cache is
+      # slow. setup-gradle caches between runs.
+      - name: Build
+        run: ./gradlew build --no-daemon
+
+      - name: Report jar
+        run: ls -lh build/libs/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MelonBoard-jar
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 30
