@@ -993,66 +993,84 @@ async function boardEmbed(env, page = 1) {
     };
   }
 
-  // A framed panel rather than a bare table. Everything is padded BEFORE colour is applied:
-  // escape codes are zero width on screen but count in String.length, so padding afterwards
+  // A framed panel carrying every stat. Everything is padded BEFORE colour is applied: escape
+  // codes are zero width on screen but count in String.length, so padding a coloured string
   // shreds the alignment.
   const RIND = "\u001b[0;32m";     // melon rind, for the frame
   const FLESH = "\u001b[0;31m";    // melon flesh, for the header rule
   const HEAD = "\u001b[1;37m";
-  const PULP = "[0;35m";     // melon flesh, for the slice column
+  const PULP = "\u001b[0;35m";     // melon flesh, for the slice column
+  const DIM = "\u001b[0;37m";      // the action columns, quieter than the score
 
-  const nameW = Math.max(10, ...players.map((p) => p.username.length));
+  // Columns size to the data rather than to the widest possible value, so a board of short names
+  // stays narrow instead of always being padded out to 16-character usernames.
+  const cols = [
+    { key: "mined",   head: "CHOP" },
+    { key: "placed",  head: "PLACE" },
+    { key: "crafted", head: "CRAFT" },
+    { key: "planted", head: "PLANT" },
+    { key: "afk",     head: "AFK" },
+  ];
+
+  const nameW = Math.max(6, ...players.map((p) => p.username.length));
   const ptsW = Math.max(6, ...players.map((p) => fmt(p.points).length));
   const slcW = Math.max(6, ...players.map((p) => fmt(p.slices ?? 0).length));
+  for (const c of cols) {
+    c.w = Math.max(c.head.length, ...players.map((p) => fmt(p[c.key] ?? 0).length));
+  }
 
-  // rank(3) + gaps + columns, matching the row template below exactly.
-  const inner = 2 + 3 + 2 + nameW + 2 + ptsW + 2 + slcW + 1;
+  const rankW = 3;
+  const gap = "  ";
+
+  // Width of one row's contents, mirroring exactly how the rows are assembled below.
+  const inner =
+    gap.length + rankW +
+    gap.length + nameW +
+    gap.length + ptsW +
+    cols.reduce((n, c) => n + gap.length + c.w, 0) +
+    gap.length + slcW +
+    1;
+
   const rule = "─".repeat(inner);
-
-  const frame = (l, mid, r) => RIND + l + mid + r + ANSI_RESET;
 
   const headerRow =
     RIND + "│" + ANSI_RESET +
-    "  " + HEAD + "#".padEnd(3) + ANSI_RESET +
-    "  " + HEAD + "FARMER".padEnd(nameW) + ANSI_RESET +
-    "  " + HEAD + "POINTS".padStart(ptsW) + ANSI_RESET +
-    "  " + HEAD + "SLICES".padStart(slcW) + ANSI_RESET +
+    gap + HEAD + "#".padEnd(rankW) + ANSI_RESET +
+    gap + HEAD + "FARMER".padEnd(nameW) + ANSI_RESET +
+    gap + HEAD + "POINTS".padStart(ptsW) + ANSI_RESET +
+    cols.map((c) => gap + HEAD + c.head.padStart(c.w) + ANSI_RESET).join("") +
+    gap + HEAD + "SLICES".padStart(slcW) + ANSI_RESET +
     " " + RIND + "│" + ANSI_RESET;
 
   const bodyRows = players.map((p, i) => {
     const rank = offset + i + 1;
 
-    // Pad first, colour second.
-    const rankCell = String(rank).padEnd(3);
-    const nameCell = p.username.padEnd(nameW);
-    const ptsCell = fmt(p.points).padStart(ptsW);
-    const slcCell = fmt(p.slices ?? 0).padStart(slcW);
-
-    // Podium ranks get a gold marker; everyone else stays plain so the eye goes to the scores.
-    const rankPainted = rank <= 3 ? "\u001b[1;33m" + rankCell + ANSI_RESET : rankCell;
+    const rankCell = String(rank).padEnd(rankW);
+    const painted = rank <= 3 ? "\u001b[1;33m" + rankCell + ANSI_RESET : rankCell;
 
     return RIND + "│" + ANSI_RESET +
-      "  " + rankPainted +
-      "  " + nameCell +
-      "  " + colourPoints(p.points, ptsCell) +
-      "  " + PULP + slcCell + ANSI_RESET +
+      gap + painted +
+      gap + p.username.padEnd(nameW) +
+      gap + colourPoints(p.points, fmt(p.points).padStart(ptsW)) +
+      cols.map((c) => gap + DIM + fmt(p[c.key] ?? 0).padStart(c.w) + ANSI_RESET).join("") +
+      gap + PULP + fmt(p.slices ?? 0).padStart(slcW) + ANSI_RESET +
       " " + RIND + "│" + ANSI_RESET;
   });
 
-  // Medals and bold only render OUTSIDE a code block, so the podium sits above the panel:
-  // the markdown gives it warmth, the panel gives it colour and alignment.
+  // Medals and bold only render OUTSIDE a code block, so the podium sits above the panel: the
+  // markdown gives it warmth, the panel gives it colour and alignment.
   const podium = players.slice(0, 3).map((p, n) =>
-    MEDALS[n] + "  **" + escapeMd(p.username) + "** " + "`" + fmt(p.points) + "`"
+    MEDALS[n] + "  **" + escapeMd(p.username) + "** `" + fmt(p.points) + "`"
   ).join("   ");
 
   const description =
     (offset === 0 && podium ? podium + "\n\n" : "") +
     "```ansi\n" +
-    frame("╭", rule, "╮") + "\n" +
+    RIND + "╭" + rule + "╮" + ANSI_RESET + "\n" +
     headerRow + "\n" +
     RIND + "├" + ANSI_RESET + FLESH + rule + ANSI_RESET + RIND + "┤" + ANSI_RESET + "\n" +
     bodyRows.join("\n") + "\n" +
-    frame("╰", rule, "╯") +
+    RIND + "╰" + rule + "╯" + ANSI_RESET +
     "\n```";
 
   // Community totals give the board a sense of scale that a list of names cannot.
