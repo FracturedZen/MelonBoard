@@ -105,8 +105,11 @@ Everything below is built, deployed and working:
 - Worker at `https://melonboard.creationplunder.workers.dev`, D1 database, cron every 2 min
 - 13 guild commands: `/leaderboard /melonstats /wallet /shop /buy /link /lottery /open
   /collection /combine /sets /trade /pings`
-- Full card deck (52 + 4 holo aces + 2 jokers), 18 numbered player cards (5/5 non-holo, 1/1 holo),
-  all 236 set images installed and serving
+- Full card deck (52 + 4 holo aces + 2 jokers), plus 30 numbered cards / 114 copies: 18 player
+  cards (5/5 non-holo, 1/1 holo) and 12 Minecraft lore cards at 5 each. All 236 set images serving
+- Adding a numbered card needs NO deploy: PNG into `assets/cards/`, run `assets/make-thumbs.ps1`,
+  push, then merge the key into the `limited_supply` meta JSON. More numbered cards do not mean
+  more numbered drops -- `ODDS.unique` is per draw and independent of supply
 - `/open` shows all six pulled cards as art, `CARD_GALLERY_SIZE` (default 2) per gallery;
   `/collection` shows the art `COLLECTION_PAGE_SIZE` (default 4) to a page, best tier first, with
   first/prev/next/last buttons. Fewer per gallery = each card drawn bigger; that is the only lever,
