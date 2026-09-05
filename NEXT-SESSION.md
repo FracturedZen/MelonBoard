@@ -16,6 +16,19 @@ in Discord rather than more code:
 2. **A trade between two people.** `/trade` has only ever been exercised one-sided. Needs a second
    linked Discord account.
 
+## Known, deliberately not done yet
+
+From the 2026-09-04 audit. None is urgent at two players; all get worse with an audience.
+
+- `/open` charges before it writes. `spend()` commits, then ~16 sequential D1 statements run; a
+  failure after the charge means paid-and-no-cards, shown to the player as "the application did
+  not respond". Nothing uses a deferred (type 5) response, so every command must finish inside
+  Discord's 3 seconds. `env.DB.batch()` would make the 12 per-card writes one round trip.
+- `flags` is never swept and holds 147 rows of curl test noise, with no command to read it.
+- Trades expire only lazily inside `resolveTrade`; an untouched one keeps live-looking buttons.
+- `meta` holds `credit:4baa6acb-b021-4a0b-8a81-e93e47a50ad3` for a UUID that is not a player,
+  matching the test series. It would be awarded on that account's first submit. Decide and delete.
+
 ## Rules that have already cost time — do not relearn them
 
 - **Register Discord commands GUILD-scoped**, never global. Pass
@@ -62,6 +75,10 @@ Everything below is built, deployed and working:
   /collection /combine /sets /trade /pings`
 - Full card deck (52 + 4 holo aces + 2 jokers), 18 numbered player cards (5/5 non-holo, 1/1 holo),
   all 236 set images installed and serving
-- `/open` shows all six pulled cards as art (two galleries, 4 + 2); `/collection` shows the art
-  four to a page, best tier first, with first/prev/next/last buttons
+- `/open` shows all six pulled cards as art, `CARD_GALLERY_SIZE` (default 2) per gallery;
+  `/collection` shows the art `COLLECTION_PAGE_SIZE` (default 4) to a page, best tier first, with
+  first/prev/next/last buttons. Fewer per gallery = each card drawn bigger; that is the only lever,
+  since Discord sizes tiles from the layout and stretches whatever art it is given.
+- `schema.sql` rebuilds the whole database again, verified against live; `server/scripts/backup.ps1`
+  exports it to `~/Desktop/MelonBoard-backups` (never into the repo -- it holds Discord ids)
 - Repo `github.com/FracturedZen/MelonBoard`, clean, CI builds and releases on tag
