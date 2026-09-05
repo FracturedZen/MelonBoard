@@ -18,7 +18,9 @@ export const RARITY = {
   rare: { label: "Rare", colour: 0x3ba55d, sell: 40 },
   epic: { label: "Epic", colour: 0x8b5cf6, sell: 150 },
   legendary: { label: "Legendary", colour: 0xf2a93b, sell: 1000 },
-  unique: { label: "1 of 1", colour: 0xe8536f, sell: 0 },
+  // Numbered cards. The label carries the print run, so a 5/5 and a 1/1 read differently
+  // everywhere they appear without needing two separate tiers.
+  unique: { label: "Numbered", colour: 0xe8536f, sell: 0 },
 };
 
 /**
@@ -90,16 +92,27 @@ export function setArtUrl(setKey) {
 /**
  * Draws one card.
  *
- * `uniques` is the list of 1-of-1 cards not yet claimed. When it is empty the unique branch is
- * skipped entirely rather than rolling for something that cannot be given, so the odds of the
- * other tiers are not quietly inflated by a dead branch.
+ * When no numbered copies remain the branch is skipped entirely rather than rolling for something
+ * that cannot be given, so the other tiers' odds are not quietly inflated by a dead branch.
+ *
+ * @param uniques entries of {key, remaining} for numbered cards with copies left.
+ *
+ * The pick is weighted by remaining copies, so a card with five prints is five times likelier to
+ * appear than a one-of-one. Weighting by card instead would make a 1/1 exactly as common as a
+ * 5/5, which defeats the point of printing five.
  */
 export function drawCard(uniques = []) {
   const roll = Math.random();
 
-  if (uniques.length && roll < ODDS.unique) {
-    const pick = uniques[Math.floor(Math.random() * uniques.length)];
-    return { key: pick, rarity: "unique", name: pick.replace(/_/g, " "), unique: true };
+  const supply = uniques.reduce((n, u) => n + u.remaining, 0);
+  if (supply > 0 && roll < ODDS.unique) {
+    let ticket = Math.floor(Math.random() * supply);
+    for (const u of uniques) {
+      ticket -= u.remaining;
+      if (ticket < 0) {
+        return { key: u.key, rarity: "unique", name: prettyKey(u.key), unique: true };
+      }
+    }
   }
 
   if (roll < ODDS.unique + ODDS.legendary) return pickFrom(POOL.legendary);
@@ -107,6 +120,11 @@ export function drawCard(uniques = []) {
   if (roll < ODDS.unique + ODDS.legendary + ODDS.epic + ODDS.rare) return pickFrom(POOL.rare);
 
   return pickFrom(POOL.common);
+}
+
+/** "frac_1_holo" -> "Frac 1 Holo". */
+export function prettyKey(key) {
+  return key.split("_").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
 function pickFrom(pool) {

@@ -1769,28 +1769,50 @@ async function openPack(env, body, ctx) {
     });
   }
 
-  // Only 1-of-1 cards nobody has claimed can drop.
+  // Numbered cards with copies left. Supply is per card; each claimed copy is a row.
+  const supply = await limitedSupply(env);
   const { results: claimed } = await env.DB.prepare(
-    "SELECT card FROM unique_claims"
+    "SELECT card, COUNT(*) AS taken FROM limited_claims GROUP BY card"
   ).all();
-  const takenUniques = new Set((claimed ?? []).map((r) => r.card));
-  const availableUniques = (await uniqueCatalogue(env)).filter((c) => !takenUniques.has(c));
+
+  const takenBy = new Map((claimed ?? []).map((r) => [r.card, r.taken]));
+  const availableUniques = Object.entries(supply)
+    .map(([key, total]) => ({ key, total, remaining: total - (takenBy.get(key) ?? 0) }))
+    .filter((u) => u.remaining > 0);
 
   const pulled = [];
   for (let i = 0; i < CARDS_PER_PACK; i++) {
     let card = drawCard(availableUniques);
 
     if (card.unique) {
-      // The insert is the claim. If it fails the card went to somebody else a moment ago.
-      const ok = await env.DB.prepare(
-        "INSERT OR IGNORE INTO unique_claims (card, uuid, claimed_at) VALUES (?, ?, ?)"
-      ).bind(card.key, bal.uuid, now()).run();
+      // Claim a specific copy. The composite key makes this atomic: if somebody took that copy a
+      // moment ago the insert changes nothing and we try the next, falling back to an ordinary
+      // card only once every copy is gone.
+      const entry = availableUniques.find((u) => u.key === card.key);
+      const total = entry?.total ?? 1;
+      let claimedCopy = 0;
 
-      if (!(ok?.meta?.changes)) {
+      for (let copy = 1; copy <= total; copy++) {
+        const ok = await env.DB.prepare(
+          "INSERT OR IGNORE INTO limited_claims (card, copy_no, uuid, claimed_at) VALUES (?, ?, ?, ?)"
+        ).bind(card.key, copy, bal.uuid, now()).run();
+
+        if (ok?.meta?.changes) {
+          claimedCopy = copy;
+          break;
+        }
+      }
+
+      if (!claimedCopy) {
         card = drawCard([]);
       } else {
-        const idx = availableUniques.indexOf(card.key);
-        if (idx >= 0) availableUniques.splice(idx, 1);
+        card = { ...card, copyNo: claimedCopy, ofTotal: total };
+        if (entry) {
+          entry.remaining -= 1;
+          if (entry.remaining <= 0) {
+            availableUniques.splice(availableUniques.indexOf(entry), 1);
+          }
+        }
       }
     }
 
@@ -1819,7 +1841,8 @@ async function openPack(env, body, ctx) {
       : c.rarity === "epic" ? "🔷"
       : c.rarity === "rare" ? "🟩"
       : "▫️";
-    return `${mark} **${cardName(c)}** — _${r.label}_`;
+    const stamp = c.copyNo ? ` _#${c.copyNo}/${c.ofTotal}_` : "";
+    return `${mark} **${cardName(c)}**${stamp} — _${r.label}_`;
   });
 
   const headline = pulled.reduce((acc, c) =>
@@ -1846,17 +1869,17 @@ function cardName(card) {
 }
 
 /**
- * The 1-of-1 catalogue, read from meta so cards can be added without a deploy.
- * Stored as a JSON array of card keys whose art sits in assets/cards.
+ * Print runs for numbered cards, as {cardKey: copies}. Held in meta rather than in code so cards
+ * and print runs can change without a deploy.
  */
-async function uniqueCatalogue(env) {
-  const raw = await getMeta(env, "unique_cards");
-  if (!raw) return [];
+async function limitedSupply(env) {
+  const raw = await getMeta(env, "limited_supply");
+  if (!raw) return {};
   try {
-    const list = JSON.parse(raw);
-    return Array.isArray(list) ? list : [];
+    const map = JSON.parse(raw);
+    return map && typeof map === "object" ? map : {};
   } catch {
-    return [];
+    return {};
   }
 }
 
@@ -1881,7 +1904,8 @@ async function announcePulls(env, username, discordId, cards) {
         embeds: [{
           color: r.colour,
           author: { name: card.rarity === "unique" ? "ONE OF ONE" : "LEGENDARY PULL" },
-          title: `${card.rarity === "unique" ? "🌟" : "✨"}  ${cardName(card)}`,
+          title: `${card.rarity === "unique" ? "🌟" : "✨"}  ${cardName(card)}` +
+            (card.copyNo ? `  #${card.copyNo}/${card.ofTotal}` : ""),
           description: `_pulled by **${escapeMd(username)}**_`,
           image: { url: artUrl(card) },
         }],
