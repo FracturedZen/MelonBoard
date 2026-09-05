@@ -57,6 +57,9 @@ BOARD_CHANNEL_ID = "1545312460456722472"
 # The guild the bot grants purchased roles in.
 GUILD_ID = "1537368810787442728"
 
+# Role pinged when someone pulls a legendary or a 1-of-1. Toggled with /pings.
+PING_ROLE_ID = "1545589878975234140"
+
 # Channel MelonBoard commands must be used in. Leave empty to allow them anywhere.
 # /leaderboard is always allowed everywhere so the board can be pulled up mid-conversation.
 COMMANDS_CHANNEL_ID = "1545503905142800474"

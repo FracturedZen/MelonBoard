@@ -37,6 +37,30 @@ const commands = [
     description: "Link your Discord account to your Minecraft account",
   },
   {
+    name: "open",
+    description: "Open a melon card pack",
+    options: [
+      {
+        name: "pay",
+        description: "What to pay with (default: melon slices)",
+        type: 3,
+        required: false,
+        choices: [
+          { name: "melon slices (120)", value: "slices" },
+          { name: "points (3,000)", value: "points" },
+        ],
+      },
+    ],
+  },
+  {
+    name: "collection",
+    description: "See the cards you have collected",
+  },
+  {
+    name: "pings",
+    description: "Toggle pings for legendary and 1-of-1 pulls",
+  },
+  {
     name: "wallet",
     description: "Your points, melon slices and owned roles",
   },

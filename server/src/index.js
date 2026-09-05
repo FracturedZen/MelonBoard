@@ -16,6 +16,11 @@
  * totals and rate sanity checks, that is as far as a client-side leaderboard can honestly go.
  */
 
+import {
+  DECK, BY_KEY, RARITY, CARDS_PER_PACK,
+  artUrl, drawCard, isNoteworthy,
+} from "./cards.js";
+
 const DISCORD_API = "https://discord.com/api/v10";
 
 /**
@@ -745,6 +750,18 @@ async function discordInteraction(request, env, ctx) {
         type: 4,
         data: { embeds: [await linkEmbed(env, user)], flags: 64 },
       });
+    }
+
+    if (name === "open") {
+      return json({ type: 4, data: await openPack(env, body, ctx) });
+    }
+
+    if (name === "collection") {
+      return json({ type: 4, data: await collectionEmbed(env, body) });
+    }
+
+    if (name === "pings") {
+      return json({ type: 4, data: await togglePings(env, body) });
     }
 
     if (name === "wallet") {
@@ -1698,6 +1715,265 @@ async function drawExpiredLotteries(env) {
       });
     }
   }
+}
+
+// ---------------------------------------------------------------------- cards
+
+const PACK_SLICES = 120;
+const PACK_POINTS = 3000;
+
+/**
+ * Opens a pack.
+ *
+ * Payment is taken through spend(), which re-checks affordability inside the UPDATE, so somebody
+ * spamming the command cannot open two packs on one balance.
+ *
+ * 1-of-1 cards are claimed by an INSERT against a primary key rather than a read-then-write. Two
+ * people opening simultaneously cannot both be handed the same card: the second insert fails and
+ * that draw falls back to an ordinary card.
+ */
+async function openPack(env, body, ctx) {
+  const user = body.member?.user ?? body.user ?? {};
+  const discordId = String(user.id ?? "");
+
+  const bal = await balanceOf(env, discordId);
+  if (!bal) {
+    return ephemeral({
+      color: MELON_PINK,
+      title: "Link your account first",
+      description: "_Run `/link`, then type the code in game._",
+    });
+  }
+
+  const currency = optionValue(body, "pay") === "points" ? "points" : "slices";
+  const cost = currency === "points" ? PACK_POINTS : PACK_SLICES;
+
+  const paid = await spend(env, bal.uuid, currency, cost, "pack", discordId);
+  if (!paid) {
+    const have = currency === "slices" ? bal.slices : bal.points;
+    return ephemeral({
+      color: MELON_PINK,
+      title: `Not enough ${currency}`,
+      description: `_A pack costs ${fmt(cost)} and you have ${fmt(have)}._`,
+    });
+  }
+
+  // Only 1-of-1 cards nobody has claimed can drop.
+  const { results: claimed } = await env.DB.prepare(
+    "SELECT card FROM unique_claims"
+  ).all();
+  const takenUniques = new Set((claimed ?? []).map((r) => r.card));
+  const availableUniques = (await uniqueCatalogue(env)).filter((c) => !takenUniques.has(c));
+
+  const pulled = [];
+  for (let i = 0; i < CARDS_PER_PACK; i++) {
+    let card = drawCard(availableUniques);
+
+    if (card.unique) {
+      // The insert is the claim. If it fails the card went to somebody else a moment ago.
+      const ok = await env.DB.prepare(
+        "INSERT OR IGNORE INTO unique_claims (card, uuid, claimed_at) VALUES (?, ?, ?)"
+      ).bind(card.key, bal.uuid, now()).run();
+
+      if (!(ok?.meta?.changes)) {
+        card = drawCard([]);
+      } else {
+        const idx = availableUniques.indexOf(card.key);
+        if (idx >= 0) availableUniques.splice(idx, 1);
+      }
+    }
+
+    pulled.push(card);
+
+    await env.DB.prepare(
+      `INSERT INTO collection (uuid, card, count, first_pulled) VALUES (?, ?, 1, ?)
+       ON CONFLICT(uuid, card) DO UPDATE SET count = count + 1`
+    ).bind(bal.uuid, card.key, now()).run();
+
+    await env.DB.prepare(
+      "INSERT INTO pulls (uuid, card, rarity, at) VALUES (?, ?, ?, ?)"
+    ).bind(bal.uuid, card.key, card.rarity, now()).run();
+  }
+
+  // Announce the good ones, in the background so the reply is not held up.
+  const best = pulled.filter((c) => isNoteworthy(c.rarity));
+  if (best.length) {
+    ctx.waitUntil(announcePulls(env, bal.username, discordId, best));
+  }
+
+  const lines = pulled.map((c) => {
+    const r = RARITY[c.rarity];
+    const mark = c.rarity === "unique" ? "🌟"
+      : c.rarity === "legendary" ? "✨"
+      : c.rarity === "epic" ? "🔷"
+      : c.rarity === "rare" ? "🟩"
+      : "▫️";
+    return `${mark} **${cardName(c)}** — _${r.label}_`;
+  });
+
+  const headline = pulled.reduce((acc, c) =>
+    rarityRank(c.rarity) > rarityRank(acc.rarity) ? c : acc, pulled[0]);
+
+  return {
+    embeds: [{
+      color: RARITY[headline.rarity].colour,
+      author: { name: "PACK OPENED" },
+      title: `🍉  ${escapeMd(bal.username)} opened a pack`,
+      description: lines.join("\n"),
+      image: { url: artUrl(headline) },
+      footer: { text: `-${fmt(cost)} ${currency} · /collection to see everything` },
+    }],
+  };
+}
+
+function rarityRank(r) {
+  return ["common", "rare", "epic", "legendary", "unique"].indexOf(r);
+}
+
+function cardName(card) {
+  return card.name ?? BY_KEY.get(card.key)?.name ?? card.key.replace(/_/g, " ");
+}
+
+/**
+ * The 1-of-1 catalogue, read from meta so cards can be added without a deploy.
+ * Stored as a JSON array of card keys whose art sits in assets/cards.
+ */
+async function uniqueCatalogue(env) {
+  const raw = await getMeta(env, "unique_cards");
+  if (!raw) return [];
+  try {
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+async function announcePulls(env, username, discordId, cards) {
+  const channel = env.COMMANDS_CHANNEL_ID;
+  if (!channel || !env.DISCORD_BOT_TOKEN) return;
+
+  const role = env.PING_ROLE_ID;
+  const mention = role ? `<@&${role}> ` : "";
+
+  for (const card of cards) {
+    const r = RARITY[card.rarity];
+    await fetch(`${DISCORD_API}/channels/${channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bot " + env.DISCORD_BOT_TOKEN,
+        "Content-Type": "application/json",
+        "User-Agent": DISCORD_UA,
+      },
+      body: JSON.stringify({
+        content: `${mention}<@${discordId}> pulled **${cardName(card)}**!`,
+        embeds: [{
+          color: r.colour,
+          author: { name: card.rarity === "unique" ? "ONE OF ONE" : "LEGENDARY PULL" },
+          title: `${card.rarity === "unique" ? "🌟" : "✨"}  ${cardName(card)}`,
+          description: `_pulled by **${escapeMd(username)}**_`,
+          image: { url: artUrl(card) },
+        }],
+        // Only the ping role is allowed to be pinged, so a username can never mass-mention.
+        allowed_mentions: { parse: [], roles: role ? [role] : [], users: [discordId] },
+      }),
+    });
+  }
+}
+
+async function collectionEmbed(env, body) {
+  const user = body.member?.user ?? body.user ?? {};
+  const bal = await balanceOf(env, String(user.id ?? ""));
+
+  if (!bal) {
+    return ephemeral({
+      color: MELON_PINK,
+      title: "Link your account first",
+      description: "_Run `/link`, then type the code in game._",
+    });
+  }
+
+  const { results } = await env.DB.prepare(
+    "SELECT card, count FROM collection WHERE uuid = ? AND count > 0"
+  ).bind(bal.uuid).all();
+
+  const owned = new Map((results ?? []).map((r) => [r.card, r.count]));
+
+  if (!owned.size) {
+    return ephemeral({
+      color: MELON_GREY,
+      author: { name: "COLLECTION" },
+      title: `🍉  ${escapeMd(bal.username)}`,
+      description: "_No cards yet. Try `/open`._",
+    });
+  }
+
+  const byRarity = {};
+  let total = 0;
+  for (const [key, count] of owned) {
+    const card = BY_KEY.get(key);
+    const rarity = card?.rarity ?? "unique";
+    (byRarity[rarity] ??= []).push({ name: cardName(card ?? { key }), count });
+    total += count;
+  }
+
+  const order = ["unique", "legendary", "epic", "rare", "common"];
+  const fields = order.filter((r) => byRarity[r]).map((r) => ({
+    name: `${RARITY[r].label} — ${byRarity[r].length}`,
+    value: byRarity[r]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((c) => c.count > 1 ? `${c.name} \u00d7${c.count}` : c.name)
+      .join("\n")
+      .slice(0, 1000),
+    inline: false,
+  }));
+
+  return ephemeral({
+    color: MELON_GREEN,
+    author: { name: "COLLECTION" },
+    title: `🍉  ${escapeMd(bal.username)}`,
+    description: `**${owned.size}** of **${DECK.length}** distinct · **${fmt(total)}** cards held`,
+    fields,
+  });
+}
+
+/** Toggles the rare-pull ping role. */
+async function togglePings(env, body) {
+  const user = body.member?.user ?? body.user ?? {};
+  const discordId = String(user.id ?? "");
+  const role = env.PING_ROLE_ID;
+
+  if (!role || !env.GUILD_ID) {
+    return ephemeral({ color: MELON_GREY, title: "Pings are not configured" });
+  }
+
+  const has = (body.member?.roles ?? []).includes(role);
+  const method = has ? "DELETE" : "PUT";
+
+  const res = await fetch(
+    `${DISCORD_API}/guilds/${env.GUILD_ID}/members/${discordId}/roles/${role}`,
+    {
+      method,
+      headers: {
+        "Authorization": "Bot " + env.DISCORD_BOT_TOKEN,
+        "User-Agent": DISCORD_UA,
+        "Content-Length": "0",
+      },
+    }
+  );
+
+  if (!res.ok) {
+    console.error("ping role toggle failed", res.status, await res.text());
+    return ephemeral({ color: MELON_PINK, title: "Could not change that" });
+  }
+
+  return ephemeral({
+    color: has ? MELON_GREY : MELON_GREEN,
+    title: has ? "🔕  Pings off" : "🔔  Pings on",
+    description: has
+      ? "_You will no longer be pinged for legendary and 1-of-1 pulls._"
+      : "_You will be pinged when anyone pulls a legendary or a 1-of-1._",
+  });
 }
 
 // ---------------------------------------------------------------------- cron
