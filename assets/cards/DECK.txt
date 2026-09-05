@@ -1,0 +1,6 @@
+Minecraft Melon Deck v2 — dark pixel cards
+52 standard + 4 holographic aces + 2 jokers + back
+Aces: A_of_<suit>.png = normal melon block
+      A_of_<suit>_holo.png = gold block, gold border, sheen
+J/Q/K = melon characters
+512x716 PNG
