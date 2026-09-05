@@ -18,7 +18,7 @@
 
 import {
   DECK, BY_KEY, RARITY, CARDS_PER_PACK,
-  artUrl, setArtUrl, drawCard, isNoteworthy, prettyKey,
+  artUrl, thumbUrl, setArtUrl, drawCard, isNoteworthy, prettyKey,
 } from "./cards.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -1935,6 +1935,10 @@ function rarityMark(rarity) {
  * The url must be a real one and it also becomes the link on the group's title, so it points at
  * the repo, with a per-group fragment that keeps two galleries in one message from merging into
  * each other.
+ *
+ * Galleries use the SQUARE art. Discord crops gallery tiles to a common, roughly square shape, so
+ * portrait card art loses its top and bottom -- the corners that name the card. Square art leaves
+ * nothing to crop. Single-image embeds are not cropped and keep the portrait original.
  */
 const GALLERY_MAX = 4;
 const GALLERY_LINK = "https://github.com/FracturedZen/MelonBoard";
@@ -1970,7 +1974,7 @@ function cardGallery(cards, tag, lead) {
   return cards.map((card, i) => ({
     ...(i === 0 ? lead : {}),
     url: `${GALLERY_LINK}#${tag}`,
-    image: { url: artUrl(card) },
+    image: { url: thumbUrl(card) },
   }));
 }
 

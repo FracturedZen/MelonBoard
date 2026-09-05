@@ -85,6 +85,20 @@ export function artUrl(card) {
   return `${ART_BASE}/cards/${card.key}.png`;
 }
 
+/**
+ * Square art, for galleries only.
+ *
+ * Discord CROPS the images in a merged gallery to fill uniform, roughly square tiles, and the card
+ * art is portrait -- so it keeps the middle and discards the top and bottom, which is the part
+ * that says which card it is. A square image gives it nothing to crop. Built by assets/make-thumbs.ps1
+ * as the original padded (not scaled) onto a 716x716 mat, so the key stays the same in both places.
+ *
+ * A single-image embed is not cropped, so those still use artUrl.
+ */
+export function thumbUrl(card) {
+  return `${ART_BASE}/thumbs/${card.key}.png`;
+}
+
 export function setArtUrl(setKey) {
   return `${ART_BASE}/sets/${setKey}.png`;
 }
