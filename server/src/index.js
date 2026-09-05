@@ -2032,6 +2032,18 @@ const HAND_SUITS = ["clubs", "diamonds", "hearts", "spades"];
 const RANK_INDEX = new Map(HAND_RANKS.map((r, i) => [r, i]));
 
 /**
+ * The ten straights, each named by its HIGHEST card.
+ *
+ * Includes the wheel -- A-2-3-4-5, where the ace plays low -- which is why there are ten runs and
+ * not nine. An ace-high run is a Royal Flush when suited.
+ */
+function straightRuns() {
+  const runs = [["A", "2", "3", "4", "5"]];
+  for (let i = 0; i + 4 < HAND_RANKS.length; i++) runs.push(HAND_RANKS.slice(i, i + 5));
+  return runs;
+}
+
+/**
  * Every hand a collection can currently make.
  *
  * Poker rules on suits: Three of a Kind needs three DIFFERENT suits, Four of a Kind all four, and
@@ -2085,12 +2097,12 @@ function availableHands(owned) {
     }
   }
 
-  for (let i = 0; i + 4 < HAND_RANKS.length; i++) {
-    const run = HAND_RANKS.slice(i, i + 5);
+  for (const run of straightRuns()) {
     if (run.every((r) => suitCount(r) >= 1)) {
+      const high = run[4];
       hands.push({
-        key: `straight_${run[0]}`,
-        label: `Straight — ${run[0]} to ${run[4]}`,
+        key: `straight_${high}`,
+        label: `Straight — ${high} high`,
         need: run.map((r) => [r, 1]),
       });
     }
@@ -2106,14 +2118,14 @@ function availableHands(owned) {
     const ranks = ranksOfSuit.get(suit);
     if (!ranks) continue;
 
-    for (let i = 0; i + 4 < HAND_RANKS.length; i++) {
-      const run = HAND_RANKS.slice(i, i + 5);
+    for (const run of straightRuns()) {
       if (!run.every((r) => ranks.has(r))) continue;
 
-      const royal = run[0] === "10";
+      const high = run[4];
+      const royal = high === "A";
       hands.push({
-        key: royal ? `royal_flush_${suit}` : `straight_flush_${run[0]}_${suit}`,
-        label: royal ? `Royal Flush — ${suit}` : `Straight Flush — ${run[0]} to ${run[4]}, ${suit}`,
+        key: royal ? `royal_flush_${suit}` : `straight_flush_${high}_${suit}`,
+        label: royal ? `Royal Flush — ${suit}` : `Straight Flush — ${high} high, ${suit}`,
         suited: suit,
         need: run.map((r) => [r, 1]),
       });
@@ -2359,9 +2371,9 @@ function prettySetKey(key) {
   if ((m = /^full_house_(.+)_over_(.+)$/.exec(key))) return `Full House — ${m[1]}s over ${m[2]}s`;
   if ((m = /^royal_flush_(.+)$/.exec(key))) return `Royal Flush — ${m[1]}`;
   if ((m = /^straight_flush_(.+)_(clubs|diamonds|hearts|spades)$/.exec(key))) {
-    return `Straight Flush — ${m[1]} up, ${m[2]}`;
+    return `Straight Flush — ${m[1]} high, ${m[2]}`;
   }
-  if ((m = /^straight_(.+)$/.exec(key))) return `Straight — ${m[1]} up`;
+  if ((m = /^straight_(.+)$/.exec(key))) return `Straight — ${m[1]} high`;
   if ((m = /^flush_(.+)$/.exec(key))) return `Flush — ${m[1]}`;
   return key.replace(/_/g, " ");
 }
