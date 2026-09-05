@@ -16,6 +16,26 @@ in Discord rather than more code:
 2. **A trade between two people.** `/trade` has only ever been exercised one-sided. Needs a second
    linked Discord account.
 
+## Card slots
+
+Buy your own card into the packs: Rare 1m, Epic 10m, Legendary 100m, 1-of-1 1b points, one per
+tier per player. `UNIQUE (uuid, tier)` on `card_claims` is what enforces that -- do not replace it
+with a read-then-write check, which races itself.
+
+rare/epic/legendary join their tier's pool: endless, tier odds unchanged, the bought card one more
+equally likely outcome inside the tier. The 1-of-1 goes through `limited_supply`/`limited_claims`
+instead, so there is one mechanism for scarce cards.
+
+**Fulfilling an order:**
+
+1. `/cardslot list` shows who is waiting. Buying also DMs you a ticket (falling back to the
+   commands channel, because a bot DM to someone with server DMs off fails silently).
+2. Draw the art, save as `assets/cards/<key>.png`. The key is lower case, digits and underscores,
+   and IS the card's display name via prettyKey -- `frac_king` shows as "Frac King".
+3. Run `assets/make-thumbs.ps1`, then push. Activation refuses a key whose PNG is not live in both
+   `assets/cards/` and `assets/thumbs/` -- a broken 1-of-1 cannot be undone once claimed.
+4. `/cardslot activate id:<n> key:<key>`. It announces the new card in the commands channel.
+
 ## Known, deliberately not done yet
 
 From the 2026-09-04 audit. None is urgent at two players; all get worse with an audience.
@@ -34,6 +54,9 @@ From the 2026-09-04 audit. None is urgent at two players; all get worse with an 
 - **Register Discord commands GUILD-scoped**, never global. Pass
   `DISCORD_GUILD_ID=1537368810787442728`. Global takes an hour to propagate and looks like
   nothing happened.
+- **Registering needs the bot token, which only exists as a Cloudflare secret and cannot be read
+  back.** Claude cannot do this step; Z has to run `scripts/register-commands.mjs`. Until it is
+  run, a new or changed command is simply absent from the picker however correct the worker is.
 - **Write patch scripts to a FILE**, never a shell heredoc. Heredocs collapse `\n` inside string
   literals into real newlines and produce broken JavaScript. This happened three times.
 - **Never filter `wrangler deploy` output to success lines.** A failed deploy went unnoticed
