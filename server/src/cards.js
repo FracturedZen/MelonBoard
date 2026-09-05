@@ -110,12 +110,16 @@ export function setArtUrl(setKey) {
  * that cannot be given, so the other tiers' odds are not quietly inflated by a dead branch.
  *
  * @param uniques entries of {key, remaining} for numbered cards with copies left.
+ * @param extras  bought cards by tier, {rare: [...], epic: [...], legendary: [...]}. These join
+ *                their tier's pool for the pick, so the TIER's odds are untouched and the extra
+ *                card is simply one more equally likely outcome inside it. That is what makes a
+ *                bought card endless: no supply to exhaust, same odds forever.
  *
  * The pick is weighted by remaining copies, so a card with five prints is five times likelier to
  * appear than a one-of-one. Weighting by card instead would make a 1/1 exactly as common as a
  * 5/5, which defeats the point of printing five.
  */
-export function drawCard(uniques = []) {
+export function drawCard(uniques = [], extras = {}) {
   const roll = Math.random();
 
   const supply = uniques.reduce((n, u) => n + u.remaining, 0);
@@ -129,11 +133,17 @@ export function drawCard(uniques = []) {
     }
   }
 
-  if (roll < ODDS.unique + ODDS.legendary) return pickFrom(POOL.legendary);
-  if (roll < ODDS.unique + ODDS.legendary + ODDS.epic) return pickFrom(POOL.epic);
-  if (roll < ODDS.unique + ODDS.legendary + ODDS.epic + ODDS.rare) return pickFrom(POOL.rare);
+  if (roll < ODDS.unique + ODDS.legendary) return pickFrom(poolFor("legendary", extras));
+  if (roll < ODDS.unique + ODDS.legendary + ODDS.epic) return pickFrom(poolFor("epic", extras));
+  if (roll < ODDS.unique + ODDS.legendary + ODDS.epic + ODDS.rare) return pickFrom(poolFor("rare", extras));
 
-  return pickFrom(POOL.common);
+  return pickFrom(poolFor("common", extras));
+}
+
+/** A tier's deck cards plus any bought ones, without mutating the built-in pool. */
+function poolFor(tier, extras) {
+  const extra = extras?.[tier];
+  return extra && extra.length ? POOL[tier].concat(extra) : POOL[tier];
 }
 
 /** "frac_1_holo" -> "Frac 1 Holo". */

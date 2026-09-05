@@ -83,5 +83,11 @@ COMMANDS_CHANNEL_ID = "1545503905142800474"
 # Channel the bot posts giveaways into.
 GIVEAWAY_CHANNEL_ID = "1545512752292831412"
 
+# Who gets the DM when somebody buys a card slot and the art needs drawing. A bot cannot DM a user
+# who has server DMs turned off, and that failure is silent -- so if the DM does not land, the
+# ticket is posted to COMMANDS_CHANNEL_ID instead rather than being lost. Somebody may have just
+# spent a billion points, so losing it is not an option.
+OWNER_DISCORD_ID = "835289311300943932"
+
 # DISCORD_BOT_TOKEN is a secret, not a var. Set it with:
 #   wrangler secret put DISCORD_BOT_TOKEN
