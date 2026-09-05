@@ -18,7 +18,7 @@
 
 import {
   DECK, BY_KEY, RARITY, CARDS_PER_PACK,
-  artUrl, thumbUrl, setArtUrl, drawCard, isNoteworthy, prettyKey,
+  artUrl, thumbUrl, setArtUrl, drawCard, isNoteworthy, prettyKey, RANKS, SUITS,
 } from "./cards.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -2031,6 +2031,31 @@ async function collectionEmbed(env, body) {
   return await collectionPage(env, String(user.id ?? ""), 1);
 }
 
+/**
+ * Best tier first, then by rank, then by suit.
+ *
+ * NOT alphabetically: sorting the names puts "10 of clubs" ahead of "2 of clubs" and lists the
+ * rares as J, K, Q. Both are correct for a dictionary and both look broken on a card table.
+ *
+ * Rank before suit, even though the deck is built suit-major, because the rank is the first thing
+ * written in a card's name and so the first thing the eye checks. Grouping by suit leaves a sparse
+ * collection reading "2, 4, 9, 10, 3" -- sorted, but not visibly so, which is the whole complaint.
+ *
+ * Cards with no rank or suit -- the jokers, and the numbered cards, which are not in the deck at
+ * all -- fall to the end of their tier and sort by name among themselves.
+ */
+function byRarityThenRank(a, b) {
+  return rarityRank(b.rarity) - rarityRank(a.rarity)
+    || indexOrLast(RANKS, a.rank) - indexOrLast(RANKS, b.rank)
+    || indexOrLast(SUITS, a.suit) - indexOrLast(SUITS, b.suit)
+    || a.name.localeCompare(b.name);
+}
+
+function indexOrLast(order, value) {
+  const i = order.indexOf(value);
+  return i === -1 ? order.length : i;
+}
+
 /** What ownedCards holds, as a list sorted best tier first, so paging through it is predictable. */
 async function collectionList(env, uuid) {
   const owned = await ownedCards(env, uuid);
@@ -2039,10 +2064,16 @@ async function collectionList(env, uuid) {
     .map(([key, count]) => {
       // Numbered cards are not in the deck, so an unknown key is one of those.
       const card = BY_KEY.get(key) ?? { key, rarity: "unique" };
-      return { key, rarity: card.rarity, name: cardName(card), count };
+      return {
+        key,
+        rarity: card.rarity,
+        rank: card.rank,
+        suit: card.suit,
+        name: cardName(card),
+        count,
+      };
     })
-    .sort((a, b) =>
-      rarityRank(b.rarity) - rarityRank(a.rarity) || a.name.localeCompare(b.name));
+    .sort(byRarityThenRank);
 }
 
 /** Renders one page of a collection as a four-card gallery with its navigation row. */
