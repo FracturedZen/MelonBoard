@@ -18,7 +18,7 @@
 
 import {
   DECK, BY_KEY, RARITY, CARDS_PER_PACK,
-  artUrl, drawCard, isNoteworthy,
+  artUrl, setArtUrl, drawCard, isNoteworthy,
 } from "./cards.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -719,6 +719,12 @@ async function discordInteraction(request, env, ctx) {
       return json({ type: 4, data });
     }
 
+    if (id === "combine_pick") {
+      const user = body.member?.user ?? body.user ?? {};
+      const choice = String(body.data?.values?.[0] ?? "");
+      return json({ type: 4, data: await doCombine(env, String(user.id ?? ""), choice) });
+    }
+
     const t = /^trade_(accept|decline):(\d+)$/.exec(id);
     if (t) {
       const user = body.member?.user ?? body.user ?? {};
@@ -757,6 +763,14 @@ async function discordInteraction(request, env, ctx) {
         type: 4,
         data: { embeds: [await linkEmbed(env, user)], flags: 64 },
       });
+    }
+
+    if (name === "combine") {
+      return json({ type: 4, data: await combineMenu(env, body) });
+    }
+
+    if (name === "sets") {
+      return json({ type: 4, data: await setsEmbed(env, body) });
     }
 
     if (name === "trade") {
@@ -2009,6 +2023,347 @@ async function togglePings(env, body) {
       ? "_You will no longer be pinged for legendary and 1-of-1 pulls._"
       : "_You will be pinged when anyone pulls a legendary or a 1-of-1._",
   });
+}
+
+// -------------------------------------------------------------------- combine
+
+const HAND_RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+const HAND_SUITS = ["clubs", "diamonds", "hearts", "spades"];
+const RANK_INDEX = new Map(HAND_RANKS.map((r, i) => [r, i]));
+
+/**
+ * Every hand a collection can currently make.
+ *
+ * Poker rules on suits: Three of a Kind needs three DIFFERENT suits, Four of a Kind all four, and
+ * a Flush five different ranks in one suit. Duplicate copies of the same card do not stack towards
+ * a hand -- three copies of the King of Hearts is one King as far as combining goes.
+ *
+ * Overlapping hands are all listed rather than resolved automatically: five consecutive cards in
+ * one suit qualify as a Straight, a Flush and a Straight Flush, and which is worth making is the
+ * player's call.
+ */
+function availableHands(owned) {
+  // Only real playing cards take part; numbered player cards have no rank or suit and are
+  // collectibles only. A holo ace counts as its suit, so it cannot pair with the plain ace of the
+  // same suit -- they are the same suit.
+  const suitsOfRank = new Map();   // rank -> Set(suit)
+  const ranksOfSuit = new Map();   // suit -> Set(rank)
+
+  for (const [key, count] of owned) {
+    if (count <= 0) continue;
+    const card = BY_KEY.get(key);
+    if (!card || !card.rank) continue;
+
+    if (!suitsOfRank.has(card.rank)) suitsOfRank.set(card.rank, new Set());
+    suitsOfRank.get(card.rank).add(card.suit);
+
+    if (!ranksOfSuit.has(card.suit)) ranksOfSuit.set(card.suit, new Set());
+    ranksOfSuit.get(card.suit).add(card.rank);
+  }
+
+  const suitCount = (rank) => suitsOfRank.get(rank)?.size ?? 0;
+  const hands = [];
+
+  for (const rank of HAND_RANKS) {
+    if (suitCount(rank) >= 3) {
+      hands.push({ key: `trips_${rank}`, label: `Three of a Kind — ${rank}s`, need: [[rank, 3]] });
+    }
+    if (suitCount(rank) >= 4) {
+      hands.push({ key: `quads_${rank}`, label: `Four of a Kind — ${rank}s`, need: [[rank, 4]] });
+    }
+  }
+
+  for (const trips of HAND_RANKS) {
+    if (suitCount(trips) < 3) continue;
+    for (const pair of HAND_RANKS) {
+      if (pair === trips || suitCount(pair) < 2) continue;
+      hands.push({
+        key: `full_house_${trips}_over_${pair}`,
+        label: `Full House — ${trips}s over ${pair}s`,
+        need: [[trips, 3], [pair, 2]],
+      });
+    }
+  }
+
+  for (let i = 0; i + 4 < HAND_RANKS.length; i++) {
+    const run = HAND_RANKS.slice(i, i + 5);
+    if (run.every((r) => suitCount(r) >= 1)) {
+      hands.push({
+        key: `straight_${run[0]}`,
+        label: `Straight — ${run[0]} to ${run[4]}`,
+        need: run.map((r) => [r, 1]),
+      });
+    }
+  }
+
+  for (const suit of HAND_SUITS) {
+    if ((ranksOfSuit.get(suit)?.size ?? 0) >= 5) {
+      hands.push({ key: `flush_${suit}`, label: `Flush — ${suit}`, suit, need: null });
+    }
+  }
+
+  for (const suit of HAND_SUITS) {
+    const ranks = ranksOfSuit.get(suit);
+    if (!ranks) continue;
+
+    for (let i = 0; i + 4 < HAND_RANKS.length; i++) {
+      const run = HAND_RANKS.slice(i, i + 5);
+      if (!run.every((r) => ranks.has(r))) continue;
+
+      const royal = run[0] === "10";
+      hands.push({
+        key: royal ? `royal_flush_${suit}` : `straight_flush_${run[0]}_${suit}`,
+        label: royal ? `Royal Flush — ${suit}` : `Straight Flush — ${run[0]} to ${run[4]}, ${suit}`,
+        suited: suit,
+        need: run.map((r) => [r, 1]),
+      });
+    }
+  }
+
+  // Best first, so the menu leads with what is worth making.
+  const worth = (k) => k.startsWith("royal") ? 7 : k.startsWith("straight_flush") ? 6
+    : k.startsWith("quads") ? 5 : k.startsWith("full_house") ? 4
+    : k.startsWith("flush") ? 3 : k.startsWith("straight") ? 2 : 1;
+
+  hands.sort((a, b) => worth(b.key) - worth(a.key) || a.label.localeCompare(b.label));
+  return hands;
+}
+
+/**
+ * Chooses which physical cards to spend.
+ *
+ * Each card in a hand must come from a DIFFERENT suit (for rank hands) or a different rank (for a
+ * flush), so this picks one card per slot and never takes two from the same. Among equals it
+ * prefers whichever the player holds most of, so a combine eats a duplicate before it eats the
+ * last copy of something.
+ *
+ * Returns null when the holding cannot actually cover the hand.
+ */
+function chooseCards(owned, hand) {
+  const pool = [...owned.entries()]
+    .map(([key, count]) => ({ key, count, card: BY_KEY.get(key) }))
+    .filter((e) => e.card && e.card.rank && e.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  const spend = {};
+
+  /** Takes one card matching the predicate, from a suit/rank not already used for this hand. */
+  const takeOne = (predicate, usedKey, used) => {
+    for (const e of pool) {
+      if (!predicate(e.card)) continue;
+
+      const dimension = usedKey(e.card);
+      if (used.has(dimension)) continue;
+
+      const already = spend[e.key] ?? 0;
+      if (e.count - already <= 0) continue;
+
+      spend[e.key] = already + 1;
+      used.add(dimension);
+      return true;
+    }
+    return false;
+  };
+
+  if (hand.suited) {
+    // Straight flush / royal: one card per rank, all in the named suit.
+    const usedRanks = new Set();
+    for (const [rank] of hand.need) {
+      if (!takeOne((c) => c.rank === rank && c.suit === hand.suited, (c) => c.rank, usedRanks)) {
+        return null;
+      }
+    }
+    return spend;
+  }
+
+  if (hand.suit) {
+    // Flush: five DIFFERENT ranks in one suit.
+    const usedRanks = new Set();
+    for (let i = 0; i < 5; i++) {
+      if (!takeOne((c) => c.suit === hand.suit, (c) => c.rank, usedRanks)) return null;
+    }
+    return spend;
+  }
+
+  // Rank hands: each copy must be a different suit. A straight needs one card per rank, so its
+  // suit constraint is tracked per rank rather than across the whole hand.
+  for (const [rank, n] of hand.need) {
+    const usedSuits = new Set();
+    for (let i = 0; i < n; i++) {
+      if (!takeOne((c) => c.rank === rank, (c) => c.suit, usedSuits)) return null;
+    }
+  }
+  return spend;
+}
+
+async function ownedCards(env, uuid) {
+  const { results } = await env.DB.prepare(
+    "SELECT card, count FROM collection WHERE uuid = ? AND count > 0"
+  ).bind(uuid).all();
+  return new Map((results ?? []).map((r) => [r.card, r.count]));
+}
+
+async function combineMenu(env, body) {
+  const user = body.member?.user ?? body.user ?? {};
+  const bal = await balanceOf(env, String(user.id ?? ""));
+
+  if (!bal) {
+    return ephemeral({
+      color: MELON_PINK, title: "Link your account first",
+      description: "_Run `/link`, then type the code in game._",
+    });
+  }
+
+  const owned = await ownedCards(env, bal.uuid);
+  const hands = availableHands(owned);
+
+  if (!hands.length) {
+    return ephemeral({
+      color: MELON_GREY,
+      author: { name: "COMBINE" },
+      title: "🃏  Nothing to combine yet",
+      description: "_You need at least three of a kind. Try `/open`._",
+    });
+  }
+
+  // Discord allows 25 options in a select. Sorted best-first, so the cut falls on the dullest.
+  const options = hands.slice(0, 25).map((h) => ({
+    label: h.label.slice(0, 100),
+    value: h.key,
+    description: `spends ${h.suit ? 5 : h.need.reduce((n, [, c]) => n + c, 0)} cards`,
+  }));
+
+  return ephemeral({
+    color: MELON_GREEN,
+    author: { name: "COMBINE" },
+    title: "🃏  Make a set",
+    description:
+      `**${hands.length}** hand${hands.length === 1 ? "" : "s"} available.\n` +
+      "_The cards are spent. Overlapping hands are all listed — pick the one you want._",
+    components: [{
+      type: 1,
+      components: [{
+        type: 3,
+        custom_id: "combine_pick",
+        placeholder: "Choose a hand to make",
+        options,
+      }],
+    }],
+  });
+}
+
+async function doCombine(env, discordId, setKey) {
+  const bal = await balanceOf(env, discordId);
+  if (!bal) return ephemeral({ color: MELON_PINK, title: "Link your account first" });
+
+  const owned = await ownedCards(env, bal.uuid);
+  const hand = availableHands(owned).find((h) => h.key === setKey);
+
+  if (!hand) {
+    return ephemeral({
+      color: MELON_PINK,
+      title: "You cannot make that any more",
+      description: "_Those cards have moved since the menu was built._",
+    });
+  }
+
+  const spend = chooseCards(owned, hand);
+  if (!spend) {
+    return ephemeral({ color: MELON_PINK, title: "You cannot make that any more" });
+  }
+
+  // Take the cards one at a time, each guarded so a count can never go negative. If any step
+  // fails the earlier ones are handed straight back rather than leaving a half-eaten hand.
+  const taken = [];
+  for (const [key, n] of Object.entries(spend)) {
+    const res = await env.DB.prepare(
+      "UPDATE collection SET count = count - ? WHERE uuid = ? AND card = ? AND count >= ?"
+    ).bind(n, bal.uuid, key, n).run();
+
+    if (!(res?.meta?.changes)) {
+      for (const [rk, rn] of taken) {
+        await env.DB.prepare(
+          "UPDATE collection SET count = count + ? WHERE uuid = ? AND card = ?"
+        ).bind(rn, bal.uuid, rk).run();
+      }
+      return ephemeral({
+        color: MELON_PINK,
+        title: "Something changed mid-combine",
+        description: "_Nothing was spent. Try again._",
+      });
+    }
+    taken.push([key, n]);
+  }
+
+  const cardList = Object.entries(spend)
+    .flatMap(([key, n]) => Array(n).fill(key));
+
+  const res = await env.DB.prepare(
+    "INSERT INTO sets (uuid, set_key, cards, made_at) VALUES (?, ?, ?, ?)"
+  ).bind(bal.uuid, setKey, JSON.stringify(cardList), now()).run();
+
+  const id = res?.meta?.last_row_id;
+
+  return {
+    embeds: [{
+      color: MELON_GREEN,
+      author: { name: "SET COMPLETE" },
+      title: `🃏  ${hand.label}`,
+      description:
+        `**${escapeMd(bal.username)}** made set **#${id}**\n\n` +
+        cardList.map((k) => "· " + (BY_KEY.get(k)?.name ?? k)).join("\n"),
+      // Falls back silently to no image when the art does not exist yet.
+      image: { url: setArtUrl(setKey) },
+      footer: { text: `${cardList.length} cards spent · /sets to see yours` },
+    }],
+  };
+}
+
+async function setsEmbed(env, body) {
+  const user = body.member?.user ?? body.user ?? {};
+  const bal = await balanceOf(env, String(user.id ?? ""));
+
+  if (!bal) return ephemeral({ color: MELON_PINK, title: "Link your account first" });
+
+  const { results } = await env.DB.prepare(
+    "SELECT id, set_key, made_at FROM sets WHERE uuid = ? ORDER BY id DESC LIMIT 40"
+  ).bind(bal.uuid).all();
+
+  if (!results?.length) {
+    return ephemeral({
+      color: MELON_GREY,
+      author: { name: "SETS" },
+      title: `🃏  ${escapeMd(bal.username)}`,
+      description: "_No sets yet. Try `/combine`._",
+    });
+  }
+
+  const lines = results.map((r) =>
+    `\`#${r.id}\` **${prettySetKey(r.set_key)}** — <t:${r.made_at}:R>`
+  );
+
+  return ephemeral({
+    color: MELON_GREEN,
+    author: { name: "SETS" },
+    title: `🃏  ${escapeMd(bal.username)}`,
+    description: `**${results.length}** set${results.length === 1 ? "" : "s"}\n\n` +
+      lines.join("\n").slice(0, 3800),
+  });
+}
+
+/** "full_house_K_over_7" -> "Full House — Ks over 7s". */
+function prettySetKey(key) {
+  let m;
+  if ((m = /^trips_(.+)$/.exec(key))) return `Three of a Kind — ${m[1]}s`;
+  if ((m = /^quads_(.+)$/.exec(key))) return `Four of a Kind — ${m[1]}s`;
+  if ((m = /^full_house_(.+)_over_(.+)$/.exec(key))) return `Full House — ${m[1]}s over ${m[2]}s`;
+  if ((m = /^royal_flush_(.+)$/.exec(key))) return `Royal Flush — ${m[1]}`;
+  if ((m = /^straight_flush_(.+)_(clubs|diamonds|hearts|spades)$/.exec(key))) {
+    return `Straight Flush — ${m[1]} up, ${m[2]}`;
+  }
+  if ((m = /^straight_(.+)$/.exec(key))) return `Straight — ${m[1]} up`;
+  if ((m = /^flush_(.+)$/.exec(key))) return `Flush — ${m[1]}`;
+  return key.replace(/_/g, " ");
 }
 
 // ---------------------------------------------------------------------- trade

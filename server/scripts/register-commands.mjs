@@ -37,6 +37,14 @@ const commands = [
     description: "Link your Discord account to your Minecraft account",
   },
   {
+    name: "combine",
+    description: "Turn cards into a poker-hand set",
+  },
+  {
+    name: "sets",
+    description: "See the sets you have made",
+  },
+  {
     name: "trade",
     description: "Offer a trade to another player",
     options: [
