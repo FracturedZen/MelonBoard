@@ -719,6 +719,13 @@ async function discordInteraction(request, env, ctx) {
       return json({ type: 4, data });
     }
 
+    const t = /^trade_(accept|decline):(\d+)$/.exec(id);
+    if (t) {
+      const user = body.member?.user ?? body.user ?? {};
+      const data = await resolveTrade(env, Number(t[2]), String(user.id ?? ""), t[1] === "accept");
+      return json({ type: 4, data });
+    }
+
     return json({ type: 4, data: ephemeral({ color: MELON_GREY, title: "Unknown button" }) });
   }
 
@@ -750,6 +757,10 @@ async function discordInteraction(request, env, ctx) {
         type: 4,
         data: { embeds: [await linkEmbed(env, user)], flags: 64 },
       });
+    }
+
+    if (name === "trade") {
+      return json({ type: 4, data: await tradeCommand(env, body) });
     }
 
     if (name === "open") {
@@ -1974,6 +1985,315 @@ async function togglePings(env, body) {
       ? "_You will no longer be pinged for legendary and 1-of-1 pulls._"
       : "_You will be pinged when anyone pulls a legendary or a 1-of-1._",
   });
+}
+
+// ---------------------------------------------------------------------- trade
+
+const TRADE_TTL = 10 * 60;
+
+/**
+ * Parses "3 of hearts x2, frac_1, 500 slices" into a normalised offer.
+ *
+ * Returns { cards: {key: n}, sets: [ids], slices: n } or an error string. Deliberately strict:
+ * an unrecognised item is refused outright rather than silently dropped, because a trade that
+ * quietly hands over less than it appeared to is the worst possible failure here.
+ */
+function parseOffer(text) {
+  const offer = { cards: {}, sets: [], slices: 0 };
+  if (!text || !text.trim()) return offer;
+
+  for (const rawPart of text.split(",")) {
+    const part = rawPart.trim().toLowerCase();
+    if (!part) continue;
+
+    let m = /^(\d+)\s*slices?$/.exec(part);
+    if (m) {
+      offer.slices += Number(m[1]);
+      continue;
+    }
+
+    m = /^set\s*#?(\d+)$/.exec(part);
+    if (m) {
+      offer.sets.push(Number(m[1]));
+      continue;
+    }
+
+    // "<card> xN" or bare "<card>"
+    let count = 1;
+    let name = part;
+    m = /^(.*?)\s*[x*]\s*(\d+)$/.exec(part);
+    if (m) {
+      name = m[1].trim();
+      count = Number(m[2]);
+    }
+
+    const key = resolveCardKey(name);
+    if (!key) return `couldn't recognise "${rawPart.trim()}"`;
+    if (count < 1 || count > 999) return `silly quantity in "${rawPart.trim()}"`;
+
+    offer.cards[key] = (offer.cards[key] ?? 0) + count;
+  }
+
+  return offer;
+}
+
+/** Accepts a card key, or a human spelling like "3 of hearts" / "holo ace of spades". */
+function resolveCardKey(input) {
+  const flat = input.replace(/\s+/g, "_");
+  if (BY_KEY.has(flat)) return flat;
+
+  const uniques = input.replace(/\s+/g, "_");
+  if (/^[a-z0-9_]+$/.test(uniques)) {
+    // 1-of-1 keys are not in the base deck, so accept them by shape.
+    if (/^(dumzy|frac|plutoren)_\d(_holo)?$/.test(uniques)) return uniques;
+  }
+
+  const holo = /\bholo\b/.test(input);
+  const cleaned = input.replace(/\bholo(graphic)?\b/g, " ").trim();
+
+  const m = /^(10|[2-9]|j|q|k|a|jack|queen|king|ace)\s*(?:of\s*)?(clubs?|diamonds?|hearts?|spades?)$/
+    .exec(cleaned);
+  if (!m) return null;
+
+  const rankMap = { jack: "J", queen: "Q", king: "K", ace: "A", j: "J", q: "Q", k: "K", a: "A" };
+  const rank = rankMap[m[1]] ?? m[1].toUpperCase();
+  const suit = m[2].endsWith("s") ? m[2] : m[2] + "s";
+
+  const key = `${rank}_of_${suit}` + (holo ? "_holo" : "");
+  return BY_KEY.has(key) ? key : null;
+}
+
+function describeOffer(offer) {
+  const bits = [];
+  for (const [key, n] of Object.entries(offer.cards)) {
+    const card = BY_KEY.get(key);
+    bits.push(`${card ? card.name : key.replace(/_/g, " ")}${n > 1 ? ` \u00d7${n}` : ""}`);
+  }
+  for (const id of offer.sets) bits.push(`set #${id}`);
+  if (offer.slices) bits.push(`${fmt(offer.slices)} 🍈`);
+  return bits.length ? bits.join(", ") : "_nothing_";
+}
+
+/** Whether a player actually holds everything in an offer, right now. */
+async function canDeliver(env, uuid, offer) {
+  for (const [key, n] of Object.entries(offer.cards)) {
+    const row = await env.DB.prepare(
+      "SELECT count FROM collection WHERE uuid = ? AND card = ?"
+    ).bind(uuid, key).first();
+
+    if ((row?.count ?? 0) < n) {
+      const card = BY_KEY.get(key);
+      return `missing ${card ? card.name : key} (has ${row?.count ?? 0}, needs ${n})`;
+    }
+  }
+
+  for (const id of offer.sets) {
+    const row = await env.DB.prepare(
+      "SELECT id FROM sets WHERE id = ? AND uuid = ?"
+    ).bind(id, uuid).first();
+    if (!row) return `set #${id} is not theirs`;
+  }
+
+  if (offer.slices) {
+    const bal = await balanceOfUuid(env, uuid);
+    if (!bal || bal.slices < offer.slices) {
+      return `not enough slices (has ${fmt(bal?.slices ?? 0)}, needs ${fmt(offer.slices)})`;
+    }
+  }
+
+  return null;
+}
+
+async function balanceOfUuid(env, uuid) {
+  const row = await env.DB.prepare(
+    "SELECT discord_id FROM links WHERE uuid = ?"
+  ).bind(uuid).first();
+  return row ? await balanceOf(env, row.discord_id) : null;
+}
+
+/** Moves one side's goods. Called only after both sides have been re-verified. */
+async function deliver(env, fromUuid, toUuid, offer) {
+  for (const [key, n] of Object.entries(offer.cards)) {
+    await env.DB.prepare(
+      "UPDATE collection SET count = count - ? WHERE uuid = ? AND card = ? AND count >= ?"
+    ).bind(n, fromUuid, key, n).run();
+
+    await env.DB.prepare(
+      `INSERT INTO collection (uuid, card, count, first_pulled) VALUES (?, ?, ?, ?)
+       ON CONFLICT(uuid, card) DO UPDATE SET count = count + ?`
+    ).bind(toUuid, key, n, now(), n).run();
+  }
+
+  for (const id of offer.sets) {
+    await env.DB.prepare("UPDATE sets SET uuid = ? WHERE id = ? AND uuid = ?")
+      .bind(toUuid, id, fromUuid).run();
+  }
+
+  if (offer.slices) {
+    // Slices are derived from watched_ticks, so a transfer is recorded as spend on one side and
+    // a matching reduction in spend on the other, keeping both balances honest without inventing
+    // playtime nobody earned.
+    await env.DB.prepare("UPDATE players SET slices_spent = slices_spent + ? WHERE uuid = ?")
+      .bind(offer.slices, fromUuid).run();
+    await env.DB.prepare("UPDATE players SET slices_spent = slices_spent - ? WHERE uuid = ?")
+      .bind(offer.slices, toUuid).run();
+  }
+}
+
+async function tradeCommand(env, body) {
+  const user = body.member?.user ?? body.user ?? {};
+  const fromDiscord = String(user.id ?? "");
+
+  const targetId = String(optionValue(body, "player") ?? "");
+  const giveText = String(optionValue(body, "give") ?? "");
+  const wantText = String(optionValue(body, "want") ?? "");
+
+  if (targetId === fromDiscord) {
+    return ephemeral({ color: MELON_PINK, title: "You cannot trade with yourself" });
+  }
+
+  const from = await balanceOf(env, fromDiscord);
+  const to = await balanceOf(env, targetId);
+
+  if (!from) {
+    return ephemeral({
+      color: MELON_PINK, title: "Link your account first",
+      description: "_Run `/link`, then type the code in game._",
+    });
+  }
+  if (!to) {
+    return ephemeral({
+      color: MELON_PINK, title: "They have not linked",
+      description: "_They need to run `/link` before they can trade._",
+    });
+  }
+
+  const give = parseOffer(giveText);
+  if (typeof give === "string") return ephemeral({ color: MELON_PINK, title: "Your side", description: `_${give}_` });
+  const want = parseOffer(wantText);
+  if (typeof want === "string") return ephemeral({ color: MELON_PINK, title: "Their side", description: `_${want}_` });
+
+  const mine = await canDeliver(env, from.uuid, give);
+  if (mine) return ephemeral({ color: MELON_PINK, title: "You cannot cover that", description: `_${mine}_` });
+
+  const theirs = await canDeliver(env, to.uuid, want);
+  if (theirs) return ephemeral({ color: MELON_PINK, title: "They cannot cover that", description: `_${theirs}_` });
+
+  const expires = now() + TRADE_TTL;
+
+  const res = await env.DB.prepare(
+    `INSERT INTO trades (from_uuid, from_discord, to_uuid, to_discord, give, want,
+                         status, from_ok, to_ok, created, expires, channel_id)
+     VALUES (?, ?, ?, ?, ?, ?, 'open', 1, 0, ?, ?, ?)`
+  ).bind(
+    from.uuid, fromDiscord, to.uuid, targetId,
+    JSON.stringify(give), JSON.stringify(want),
+    now(), expires, String(body.channel_id ?? "")
+  ).run();
+
+  const id = res?.meta?.last_row_id;
+
+  return {
+    content: `<@${targetId}>`,
+    allowed_mentions: { parse: [], users: [targetId] },
+    embeds: [{
+      color: MELON_GREEN,
+      author: { name: "TRADE OFFER" },
+      title: `🤝  Trade #${id}`,
+      description:
+        `**${escapeMd(from.username)}** gives\n${describeOffer(give)}\n\n` +
+        `**${escapeMd(to.username)}** gives\n${describeOffer(want)}\n\n` +
+        `_Only <@${targetId}> can accept. Expires <t:${expires}:R>._`,
+    }],
+    components: [{
+      type: 1,
+      components: [
+        { type: 2, style: 3, label: "Accept", custom_id: `trade_accept:${id}` },
+        { type: 2, style: 4, label: "Decline", custom_id: `trade_decline:${id}` },
+      ],
+    }],
+  };
+}
+
+/**
+ * Accepts or declines. Everything is re-verified at this moment, not at proposal time -- the
+ * cards may have been traded away, spent in a combine, or sold in the minutes since.
+ */
+async function resolveTrade(env, id, discordId, accept) {
+  const trade = await env.DB.prepare("SELECT * FROM trades WHERE id = ?").bind(id).first();
+
+  if (!trade) return ephemeral({ color: MELON_GREY, title: "That trade is gone" });
+  if (trade.status !== "open") {
+    return ephemeral({ color: MELON_GREY, title: `That trade was already ${trade.status}` });
+  }
+  if (trade.expires < now()) {
+    await env.DB.prepare("UPDATE trades SET status = 'expired' WHERE id = ?").bind(id).run();
+    return ephemeral({ color: MELON_GREY, title: "That trade expired" });
+  }
+
+  // Either party may decline; only the recipient may accept.
+  if (!accept) {
+    if (discordId !== trade.to_discord && discordId !== trade.from_discord) {
+      return ephemeral({ color: MELON_PINK, title: "Not your trade" });
+    }
+    await env.DB.prepare("UPDATE trades SET status = 'declined' WHERE id = ?").bind(id).run();
+    return { embeds: [{ color: MELON_GREY, title: `🤝  Trade #${id} declined` }] };
+  }
+
+  if (discordId !== trade.to_discord) {
+    return ephemeral({
+      color: MELON_PINK,
+      title: "Not yours to accept",
+      description: `_Only <@${trade.to_discord}> can accept this._`,
+    });
+  }
+
+  const give = JSON.parse(trade.give);
+  const want = JSON.parse(trade.want);
+
+  // Claim the trade before moving anything. If two clicks land together, only one changes a row,
+  // so goods cannot move twice.
+  const claim = await env.DB.prepare(
+    "UPDATE trades SET status = 'settling' WHERE id = ? AND status = 'open'"
+  ).bind(id).run();
+
+  if (!(claim?.meta?.changes)) {
+    return ephemeral({ color: MELON_GREY, title: "That trade is already being settled" });
+  }
+
+  const failA = await canDeliver(env, trade.from_uuid, give);
+  const failB = await canDeliver(env, trade.to_uuid, want);
+
+  if (failA || failB) {
+    await env.DB.prepare("UPDATE trades SET status = 'failed' WHERE id = ?").bind(id).run();
+    return {
+      embeds: [{
+        color: MELON_PINK,
+        title: `🤝  Trade #${id} fell through`,
+        description: `_${failA ?? failB}. Nothing changed hands._`,
+      }],
+    };
+  }
+
+  await deliver(env, trade.from_uuid, trade.to_uuid, give);
+  await deliver(env, trade.to_uuid, trade.from_uuid, want);
+
+  await env.DB.prepare(
+    "UPDATE trades SET status = 'done', to_ok = 1 WHERE id = ?"
+  ).bind(id).run();
+
+  return {
+    embeds: [{
+      color: MELON_GREEN,
+      author: { name: "TRADE COMPLETE" },
+      title: `🤝  Trade #${id}`,
+      description:
+        `<@${trade.from_discord}> gave ${describeOffer(give)}\n` +
+        `<@${trade.to_discord}> gave ${describeOffer(want)}`,
+      footer: { text: "Check /collection" },
+    }],
+    allowed_mentions: { parse: [] },
+  };
 }
 
 // ---------------------------------------------------------------------- cron

@@ -37,6 +37,25 @@ const commands = [
     description: "Link your Discord account to your Minecraft account",
   },
   {
+    name: "trade",
+    description: "Offer a trade to another player",
+    options: [
+      { name: "player", description: "Who to trade with", type: 6, required: true },
+      {
+        name: "give",
+        description: "What you give, e.g. 3 of hearts x2, frac_1, 500 slices",
+        type: 3,
+        required: false,
+      },
+      {
+        name: "want",
+        description: "What you want back, same format",
+        type: 3,
+        required: false,
+      },
+    ],
+  },
+  {
     name: "open",
     description: "Open a melon card pack",
     options: [
