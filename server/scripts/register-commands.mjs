@@ -1,12 +1,17 @@
 /**
  * Registers MelonBoard's slash commands with Discord.
  *
- * Run once after deploying, and again whenever the command definitions below change:
+ * Run again whenever the definitions below change:
  *
- *   DISCORD_APP_ID=... DISCORD_BOT_TOKEN=... node scripts/register-commands.mjs
+ *   DISCORD_APP_ID=... DISCORD_BOT_TOKEN=... DISCORD_GUILD_ID=... node scripts/register-commands.mjs
  *
- * Global commands can take up to an hour to appear. To iterate faster, also pass
- * DISCORD_GUILD_ID and they register instantly for that one server.
+ * ALWAYS PASS DISCORD_GUILD_ID. Global commands take up to an hour to appear, which means a new
+ * command looks simply missing for most of that time; guild-scoped ones appear at once. This bot
+ * serves one server, so there is nothing to gain from global registration and an hour to lose.
+ *
+ * Register guild commands BEFORE clearing globals if both exist -- a name registered in both
+ * scopes shows up twice in the picker, and clearing globals first leaves a gap with no commands
+ * at all.
  */
 
 const APP_ID = process.env.DISCORD_APP_ID;
