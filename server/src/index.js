@@ -895,6 +895,39 @@ function fmt(n) {
   return Number(n || 0).toLocaleString("en-US");
 }
 
+/**
+ * Compact form for display: 10.1K, 2.4M, 1.3B.
+ *
+ * Panels are width-constrained -- a code block inside an embed wraps rather than scrolls -- and a
+ * seven-digit score eats a third of the available room. One decimal keeps the magnitude readable
+ * without pretending to a precision nobody needs at a glance. A trailing .0 is dropped, so a flat
+ * ten thousand reads 10K rather than 10.0K.
+ *
+ * Exact values still appear wherever precision matters, such as balances and prices.
+ */
+function compact(n) {
+  const v = Number(n || 0);
+  const abs = Math.abs(v);
+
+  if (abs < 1000) return String(Math.round(v));
+
+  // Descending, so the next larger unit is the PRECEDING entry -- searching forwards for a
+  // bigger divisor jumps straight past M to B.
+  const units = [[1e9, "B"], [1e6, "M"], [1e3, "K"]];
+  let i = units.findIndex(([d]) => abs >= d);
+  let [div, suffix] = units[i];
+
+  let scaled = Math.round((v / div) * 10) / 10;
+
+  // Rounding can push a value past its own unit: 999,999 rounds to 1000.0K, which should read 1M.
+  if (Math.abs(scaled) >= 1000 && i > 0) {
+    [div, suffix] = units[--i];
+    scaled = Math.round((v / div) * 10) / 10;
+  }
+
+  return (Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(1)) + suffix;
+}
+
 /** Proportional bar for the podium. Always shows at least one segment for a nonzero score. */
 function bar(value, max, width = 14) {
   if (!max || max <= 0 || value <= 0) return "▱".repeat(width);
@@ -1011,7 +1044,7 @@ function playerCards(players, offset) {
 
   const labelW = Math.max(...[...LEFT, ...RIGHT].map((c) => c.label.length));
   const widthOf = (set) => Math.max(
-    ...set.flatMap((c) => players.map((p) => fmt(p[c.key] ?? 0).length))
+    ...set.flatMap((c) => players.map((p) => compact(p[c.key] ?? 0).length))
   );
   const leftW = widthOf(LEFT);
   const rightW = widthOf(RIGHT);
@@ -1026,9 +1059,9 @@ function playerCards(players, offset) {
       const rv = p[r.key] ?? 0;
 
       return "  " + l.label.padEnd(labelW) + " " +
-        colourPoints(lv, fmt(lv).padStart(leftW)) +
+        colourPoints(lv, compact(lv).padStart(leftW)) +
         "   " + r.label.padEnd(labelW) + " " +
-        colourPoints(rv, fmt(rv).padStart(rightW));
+        colourPoints(rv, compact(rv).padStart(rightW));
     });
 
     return heading + "\n" + lines.join("\n");
@@ -1063,7 +1096,7 @@ async function boardEmbeds(env, page = 1) {
   // ---- panel one: the ranking -------------------------------------------
   const nameW = Math.min(16, Math.max("FARMER".length,
     ...players.map((p) => p.username.length)));
-  const ptsW = Math.max("POINTS".length, ...players.map((p) => fmt(p.points).length));
+  const ptsW = Math.max("POINTS".length, ...players.map((p) => compact(p.points).length));
   const rankW = Math.max(1, String(offset + players.length).length);
 
   const rankHeader = HEAD + "#".padStart(rankW) + "  " + "FARMER".padEnd(nameW) +
@@ -1075,12 +1108,12 @@ async function boardEmbeds(env, page = 1) {
     const cell = String(rank).padStart(rankW);
     return (rank <= 3 ? "\u001b[1;33m" + cell + ANSI_RESET : cell) +
       "  " + p.username.slice(0, nameW).padEnd(nameW) +
-      "  " + colourPoints(p.points, fmt(p.points).padStart(ptsW));
+      "  " + colourPoints(p.points, compact(p.points).padStart(ptsW));
   });
 
   // Medals and bold render only OUTSIDE a code block; colour only inside one.
   const podium = players.slice(0, 3).map((p, n) =>
-    MEDALS[n] + " **" + escapeMd(p.username) + "** `" + fmt(p.points) + "`"
+    MEDALS[n] + " **" + escapeMd(p.username) + "** `" + compact(p.points) + "`"
   ).join("  ");
 
   const totals = await env.DB.prepare(
@@ -1108,7 +1141,7 @@ async function boardEmbeds(env, page = 1) {
       { name: "Scoring", value: scoringLine(w), inline: true },
       {
         name: "Community",
-        value: `${fmt(totals?.players ?? 0)} farmers · ${fmt(harvested)} melon actions`,
+        value: `${fmt(totals?.players ?? 0)} farmers · ${compact(harvested)} melon actions`,
         inline: true,
       },
     ],
