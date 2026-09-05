@@ -55,11 +55,15 @@ A Discord embed holds ONE image, and a Worker has no canvas to composite with. S
 means Discord's **gallery**: consecutive embeds sharing the **same `url`** merge into one grid of
 **at most 4**. `cardGallery()` in `server/src/index.js` is the single place that knows this.
 
-- Discord CROPS gallery tiles to a common, roughly square shape, so portrait art loses its top
-  and bottom. Galleries therefore use SQUARE art from `assets/thumbs/` (`thumbUrl`), built by
-  `assets/make-thumbs.ps1` as a pad -- not a scale -- onto a #14101C mat. Single images are not
-  cropped and keep the portrait original (`artUrl`). Re-run the script after adding a card, and
-  push assets BEFORE deploying the worker that references them.
+- Discord CROPS gallery tiles to fill them, and THE TILE SHAPE CHANGES WITH HOW MANY IMAGES ARE
+  IN THE GROUP. Square art from `assets/thumbs/` fixes a 2x2 but not a row of two, so chasing the
+  art shape per group size does not converge -- Discord owns the layout. One image per embed is
+  never cropped and is the only safe size: `CARD_GALLERY_SIZE = "1"` for /open. /collection stays
+  at 4, where the square art does work.
+- `cardGallery()` picks art by group size: solo -> portrait `artUrl`, 2+ -> square `thumbUrl`
+  (built by `assets/make-thumbs.ps1`, a pad onto a #14101C mat, not a scale). Re-run that script
+  after adding a card, and push assets BEFORE deploying the worker that references them. Keep the
+  code default and the wrangler var in step.
 - Only the first embed of a group renders text; the rest are a url and an image.
 - The url has to be real and becomes the link on that group's title, so it points at the repo with
   a per-group `#fragment` — without distinct fragments two galleries in one message merge.
