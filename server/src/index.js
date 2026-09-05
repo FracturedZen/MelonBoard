@@ -18,7 +18,7 @@
 
 import {
   DECK, BY_KEY, RARITY, CARDS_PER_PACK,
-  artUrl, setArtUrl, drawCard, isNoteworthy,
+  artUrl, setArtUrl, drawCard, isNoteworthy, prettyKey,
 } from "./cards.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -723,6 +723,27 @@ async function discordInteraction(request, env, ctx) {
       const user = body.member?.user ?? body.user ?? {};
       const choice = String(body.data?.values?.[0] ?? "");
       return json({ type: 4, data: await doCombine(env, String(user.id ?? ""), choice) });
+    }
+
+    const c = /^coll:(\d+):(\d+):\w+$/.exec(id);
+    if (c) {
+      const user = body.member?.user ?? body.user ?? {};
+      const clicker = String(user.id ?? "");
+
+      if (clicker !== c[1]) {
+        return json({
+          type: 4,
+          data: ephemeral({
+            color: MELON_GREY,
+            title: "Not your collection",
+            description: "_Run `/collection` to page through your own._",
+          }),
+        });
+      }
+
+      // Type 7 is UPDATE_MESSAGE: it edits the page in place, so browsing a collection does not
+      // leave a trail of replies behind it.
+      return json({ type: 7, data: await collectionPage(env, clicker, Number(c[2])) });
     }
 
     const t = /^trade_(accept|decline):(\d+)$/.exec(id);
@@ -1849,29 +1870,38 @@ async function openPack(env, body, ctx) {
   }
 
   const lines = pulled.map((c) => {
-    const r = RARITY[c.rarity];
-    const mark = c.rarity === "unique" ? "🌟"
-      : c.rarity === "legendary" ? "✨"
-      : c.rarity === "epic" ? "🔷"
-      : c.rarity === "rare" ? "🟩"
-      : "▫️";
     const stamp = c.copyNo ? ` _#${c.copyNo}/${c.ofTotal}_` : "";
-    return `${mark} **${cardName(c)}**${stamp} — _${r.label}_`;
+    return `${rarityMark(c.rarity)} **${cardName(c)}**${stamp} — _${RARITY[c.rarity].label}_`;
   });
 
   const headline = pulled.reduce((acc, c) =>
     rarityRank(c.rarity) > rarityRank(acc.rarity) ? c : acc, pulled[0]);
 
-  return {
-    embeds: [{
-      color: RARITY[headline.rarity].colour,
-      author: { name: "PACK OPENED" },
-      title: `🍉  ${escapeMd(bal.username)} opened a pack`,
-      description: lines.join("\n"),
-      image: { url: artUrl(headline) },
-      footer: { text: `-${fmt(cost)} ${currency} · /collection to see everything` },
-    }],
-  };
+  // All six cards, four to a gallery -- so one group of four then one of two -- kept in the order
+  // they were pulled so the pictures line up with the list above them. The colour of the whole
+  // message is still the best card's, which is what makes a good pack readable at a glance.
+  const colour = RARITY[headline.rarity].colour;
+  const embeds = [];
+  let last = null;
+
+  for (let i = 0; i < pulled.length; i += GALLERY_SIZE) {
+    const group = cardGallery(pulled.slice(i, i + GALLERY_SIZE), `pack-${i}`, i === 0
+      ? {
+        color: colour,
+        author: { name: "PACK OPENED" },
+        title: `🍉  ${escapeMd(bal.username)} opened a pack`,
+        description: lines.join("\n"),
+      }
+      : { color: colour });
+
+    last = group[0];
+    embeds.push(...group);
+  }
+
+  // The receipt goes on the final group so it reads as the last line of the message.
+  last.footer = { text: `-${fmt(cost)} ${currency} · /collection to see everything` };
+
+  return { embeds };
 }
 
 function rarityRank(r) {
@@ -1879,7 +1909,41 @@ function rarityRank(r) {
 }
 
 function cardName(card) {
-  return card.name ?? BY_KEY.get(card.key)?.name ?? card.key.replace(/_/g, " ");
+  return card.name ?? BY_KEY.get(card.key)?.name ?? prettyKey(card.key);
+}
+
+/** Tier marker, shared by every list that names cards, so the tiers read the same everywhere. */
+function rarityMark(rarity) {
+  return rarity === "unique" ? "🌟"
+    : rarity === "legendary" ? "✨"
+    : rarity === "epic" ? "🔷"
+    : rarity === "rare" ? "🟩"
+    : "▫️";
+}
+
+/**
+ * SHOWING SEVERAL CARD IMAGES IN ONE MESSAGE
+ *
+ * An embed carries exactly one image and a Worker has no canvas to composite with, so the only
+ * way to show a handful of cards is Discord's own gallery: consecutive embeds that share the SAME
+ * `url` are merged into a single image grid. That grid holds at most FOUR images -- which is why
+ * six pulled cards arrive as two groups, and why a collection is paged four at a time rather than
+ * rendered whole.
+ *
+ * Only the first embed of a group shows text; the rest are a url and an image and nothing else.
+ * The url must be a real one and it also becomes the link on the group's title, so it points at
+ * the repo, with a per-group fragment that keeps two galleries in one message from merging into
+ * each other.
+ */
+const GALLERY_SIZE = 4;
+const GALLERY_LINK = "https://github.com/FracturedZen/MelonBoard";
+
+function cardGallery(cards, tag, lead) {
+  return cards.map((card, i) => ({
+    ...(i === 0 ? lead : {}),
+    url: `${GALLERY_LINK}#${tag}`,
+    image: { url: artUrl(card) },
+  }));
 }
 
 /**
@@ -1932,7 +1996,29 @@ async function announcePulls(env, username, discordId, cards) {
 
 async function collectionEmbed(env, body) {
   const user = body.member?.user ?? body.user ?? {};
-  const bal = await balanceOf(env, String(user.id ?? ""));
+  return await collectionPage(env, String(user.id ?? ""), 1);
+}
+
+/** One gallery's worth of cards -- see cardGallery for why four and not more. */
+const COLLECTION_PAGE = GALLERY_SIZE;
+
+/** What ownedCards holds, as a list sorted best tier first, so paging through it is predictable. */
+async function collectionList(env, uuid) {
+  const owned = await ownedCards(env, uuid);
+
+  return [...owned]
+    .map(([key, count]) => {
+      // Numbered cards are not in the deck, so an unknown key is one of those.
+      const card = BY_KEY.get(key) ?? { key, rarity: "unique" };
+      return { key, rarity: card.rarity, name: cardName(card), count };
+    })
+    .sort((a, b) =>
+      rarityRank(b.rarity) - rarityRank(a.rarity) || a.name.localeCompare(b.name));
+}
+
+/** Renders one page of a collection as a four-card gallery with its navigation row. */
+async function collectionPage(env, discordId, page) {
+  const bal = await balanceOf(env, discordId);
 
   if (!bal) {
     return ephemeral({
@@ -1942,13 +2028,9 @@ async function collectionEmbed(env, body) {
     });
   }
 
-  const { results } = await env.DB.prepare(
-    "SELECT card, count FROM collection WHERE uuid = ? AND count > 0"
-  ).bind(bal.uuid).all();
+  const cards = await collectionList(env, bal.uuid);
 
-  const owned = new Map((results ?? []).map((r) => [r.card, r.count]));
-
-  if (!owned.size) {
+  if (!cards.length) {
     return ephemeral({
       color: MELON_GREY,
       author: { name: "COLLECTION" },
@@ -1957,33 +2039,57 @@ async function collectionEmbed(env, body) {
     });
   }
 
-  const byRarity = {};
-  let total = 0;
-  for (const [key, count] of owned) {
-    const card = BY_KEY.get(key);
-    const rarity = card?.rarity ?? "unique";
-    (byRarity[rarity] ??= []).push({ name: cardName(card ?? { key }), count });
-    total += count;
-  }
+  const pages = Math.ceil(cards.length / COLLECTION_PAGE);
+  const at = Math.min(Math.max(1, page), pages);
+  const shown = cards.slice((at - 1) * COLLECTION_PAGE, at * COLLECTION_PAGE);
+  const held = cards.reduce((n, c) => n + c.count, 0);
 
-  const order = ["unique", "legendary", "epic", "rare", "common"];
-  const fields = order.filter((r) => byRarity[r]).map((r) => ({
-    name: `${RARITY[r].label} — ${byRarity[r].length}`,
-    value: byRarity[r]
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((c) => c.count > 1 ? `${c.name} \u00d7${c.count}` : c.name)
-      .join("\n")
-      .slice(0, 1000),
-    inline: false,
-  }));
+  const lines = shown.map((c) => {
+    const copies = c.count > 1 ? ` \u00d7${c.count}` : "";
+    return `${rarityMark(c.rarity)} **${c.name}**${copies} — _${RARITY[c.rarity].label}_`;
+  });
 
-  return ephemeral({
+  // The page number sits in the description rather than a footer: a merged gallery puts the lead
+  // embed's text above the grid, which is where a reader looks for "where am I".
+  const embeds = cardGallery(shown, `collection-${at}`, {
     color: MELON_GREEN,
     author: { name: "COLLECTION" },
     title: `🍉  ${escapeMd(bal.username)}`,
-    description: `**${owned.size}** of **${DECK.length}** distinct · **${fmt(total)}** cards held`,
-    fields,
+    description:
+      `**${cards.length}** of **${DECK.length}** distinct · **${fmt(held)}** held` +
+      ` · page **${at}/${pages}**\n\n` + lines.join("\n"),
   });
+
+  return { embeds, components: pages > 1 ? [collectionNav(discordId, at, pages)] : [], flags: 64 };
+}
+
+/**
+ * The page buttons. The owner's id is baked into every custom_id so a button cannot page a
+ * collection that is not its owner's -- the reply is ephemeral, so this is a second lock on an
+ * already shut door, but the ids outlive the message and cost nothing to check.
+ */
+function collectionNav(discordId, page, pages) {
+  // The slot name is part of the id because two buttons can legitimately point at the same page --
+  // on page 2 of 3, "<<" and "<" both mean page 1 -- and Discord rejects a message whose
+  // components share a custom_id.
+  const jump = (label, slot, target, disabled) => ({
+    type: 2,
+    style: 2,
+    label,
+    custom_id: `coll:${discordId}:${target}:${slot}`,
+    disabled,
+  });
+
+  return {
+    type: 1,
+    components: [
+      jump("<<", "first", 1, page <= 1),
+      jump("<", "prev", page - 1, page <= 1),
+      { type: 2, style: 2, label: `${page} / ${pages}`, custom_id: "coll_page", disabled: true },
+      jump(">", "next", page + 1, page >= pages),
+      jump(">>", "last", pages, page >= pages),
+    ],
+  };
 }
 
 /** Toggles the rare-pull ping role. */
