@@ -1877,15 +1877,16 @@ async function openPack(env, body, ctx) {
   const headline = pulled.reduce((acc, c) =>
     rarityRank(c.rarity) > rarityRank(acc.rarity) ? c : acc, pulled[0]);
 
-  // All six cards, four to a gallery -- so one group of four then one of two -- kept in the order
-  // they were pulled so the pictures line up with the list above them. The colour of the whole
-  // message is still the best card's, which is what makes a good pack readable at a glance.
+  // All six cards, gallerySize to a group, kept in the order they were pulled so the pictures line
+  // up with the list above them. The colour of the whole message is still the best card's, which
+  // is what makes a good pack readable at a glance.
   const colour = RARITY[headline.rarity].colour;
+  const size = gallerySize(env);
   const embeds = [];
   let last = null;
 
-  for (let i = 0; i < pulled.length; i += GALLERY_SIZE) {
-    const group = cardGallery(pulled.slice(i, i + GALLERY_SIZE), `pack-${i}`, i === 0
+  for (let i = 0; i < pulled.length; i += size) {
+    const group = cardGallery(pulled.slice(i, i + size), `pack-${i}`, i === 0
       ? {
         color: colour,
         author: { name: "PACK OPENED" },
@@ -1935,8 +1936,35 @@ function rarityMark(rarity) {
  * the repo, with a per-group fragment that keeps two galleries in one message from merging into
  * each other.
  */
-const GALLERY_SIZE = 4;
+const GALLERY_MAX = 4;
 const GALLERY_LINK = "https://github.com/FracturedZen/MelonBoard";
+
+/**
+ * HOW MANY CARDS SHARE ONE GALLERY -- ie. HOW BIG EACH CARD IS DRAWN.
+ *
+ * Fewer means bigger, and it is the only lever there is. Discord fits the whole grid inside a
+ * bounded height, so four portrait cards in a 2x2 are each drawn small, while two side by side
+ * are drawn large. Shrinking the source art does NOT help: the tile size comes from the layout,
+ * and a smaller PNG is simply stretched to fill the same tile.
+ *
+ * 4 is Discord's hard ceiling. 1 skips the grid entirely and gives a single full-width image.
+ */
+function gallerySize(env) {
+  return clampGallery(numberFrom(env.CARD_GALLERY_SIZE, 2));
+}
+
+/**
+ * Cards per collection page. Deliberately allowed to differ from gallerySize: a collection is a
+ * browsing view where the names are already written out, and halving this doubles the number of
+ * pages somebody has to click through -- a full deck at 2 a page is 29 pages.
+ */
+function collectionPageSize(env) {
+  return clampGallery(numberFrom(env.COLLECTION_PAGE_SIZE, 4));
+}
+
+function clampGallery(n) {
+  return Math.min(GALLERY_MAX, Math.max(1, Math.floor(n)));
+}
 
 function cardGallery(cards, tag, lead) {
   return cards.map((card, i) => ({
@@ -1999,9 +2027,6 @@ async function collectionEmbed(env, body) {
   return await collectionPage(env, String(user.id ?? ""), 1);
 }
 
-/** One gallery's worth of cards -- see cardGallery for why four and not more. */
-const COLLECTION_PAGE = GALLERY_SIZE;
-
 /** What ownedCards holds, as a list sorted best tier first, so paging through it is predictable. */
 async function collectionList(env, uuid) {
   const owned = await ownedCards(env, uuid);
@@ -2039,9 +2064,10 @@ async function collectionPage(env, discordId, page) {
     });
   }
 
-  const pages = Math.ceil(cards.length / COLLECTION_PAGE);
+  const per = collectionPageSize(env);
+  const pages = Math.ceil(cards.length / per);
   const at = Math.min(Math.max(1, page), pages);
-  const shown = cards.slice((at - 1) * COLLECTION_PAGE, at * COLLECTION_PAGE);
+  const shown = cards.slice((at - 1) * per, at * per);
   const held = cards.reduce((n, c) => n + c.count, 0);
 
   const lines = shown.map((c) => {

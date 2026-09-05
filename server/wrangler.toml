@@ -45,6 +45,18 @@ AFK_PER_POINT = "500"
 SOFT_RATE = "20"
 HARD_RATE = "200"
 
+# How many card images share one Discord gallery -- which is the same thing as how BIG each card
+# is drawn. Discord fits the whole grid inside a bounded height, so four portrait cards in a 2x2
+# are each drawn small and two side by side are drawn large. 4 is Discord's ceiling; 1 skips the
+# grid and gives one full-width image per card. Shrinking the art itself does nothing: the tile
+# size comes from the layout and a smaller PNG is stretched to fill the same tile.
+CARD_GALLERY_SIZE = "2"
+
+# Cards per /collection page. Kept separate from CARD_GALLERY_SIZE on purpose: a collection is a
+# browsing view whose card names are already written out, and halving this doubles the clicks --
+# a full deck at 2 a page is 29 pages. Same 1..4 range.
+COLLECTION_PAGE_SIZE = "4"
+
 # From the Discord developer portal -> your application. Neither is secret: the public key only
 # verifies Discord's signatures, it cannot produce them.
 DISCORD_APP_ID     = "1545309849594892288"
