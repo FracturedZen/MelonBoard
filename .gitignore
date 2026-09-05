@@ -20,3 +20,8 @@ package-lock.json
 .idea/
 *.iml
 .vscode/
+
+# Database dumps: they contain Discord ids and Minecraft UUIDs, and this repo is public.
+# server/scripts/backup.ps1 writes outside the tree by default; this is the second lock.
+melonboard-*.sql
+backups/
