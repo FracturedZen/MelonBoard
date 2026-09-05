@@ -1936,9 +1936,16 @@ function rarityMark(rarity) {
  * the repo, with a per-group fragment that keeps two galleries in one message from merging into
  * each other.
  *
- * Galleries use the SQUARE art. Discord crops gallery tiles to a common, roughly square shape, so
- * portrait card art loses its top and bottom -- the corners that name the card. Square art leaves
- * nothing to crop. Single-image embeds are not cropped and keep the portrait original.
+ * ART SHAPE FOLLOWS GROUP SIZE, because cropping does.
+ *
+ * A group of two or more is laid into uniform tiles and cropped to fill them, which takes the top
+ * and bottom off portrait art -- the corners that name the card -- so those get the SQUARE art.
+ * A group of ONE is not a grid and is not cropped, so it gets the portrait original: the square
+ * version would only add mat bars either side and make the card smaller for no reason.
+ *
+ * The square art does not make every group safe, only square-tiled ones. Tile shape varies with
+ * how many images are in the gallery, so a group of two can still crop a square image. One image
+ * per embed is the only size that cannot crop at all.
  */
 const GALLERY_MAX = 4;
 const GALLERY_LINK = "https://github.com/FracturedZen/MelonBoard";
@@ -1954,7 +1961,7 @@ const GALLERY_LINK = "https://github.com/FracturedZen/MelonBoard";
  * 4 is Discord's hard ceiling. 1 skips the grid entirely and gives a single full-width image.
  */
 function gallerySize(env) {
-  return clampGallery(numberFrom(env.CARD_GALLERY_SIZE, 2));
+  return clampGallery(numberFrom(env.CARD_GALLERY_SIZE, 1));
 }
 
 /**
@@ -1971,10 +1978,12 @@ function clampGallery(n) {
 }
 
 function cardGallery(cards, tag, lead) {
+  const art = cards.length > 1 ? thumbUrl : artUrl;
+
   return cards.map((card, i) => ({
     ...(i === 0 ? lead : {}),
     url: `${GALLERY_LINK}#${tag}`,
-    image: { url: thumbUrl(card) },
+    image: { url: art(card) },
   }));
 }
 

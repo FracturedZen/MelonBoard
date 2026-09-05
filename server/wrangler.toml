@@ -50,7 +50,11 @@ HARD_RATE = "200"
 # are each drawn small and two side by side are drawn large. 4 is Discord's ceiling; 1 skips the
 # grid and gives one full-width image per card. Shrinking the art itself does nothing: the tile
 # size comes from the layout and a smaller PNG is stretched to fill the same tile.
-CARD_GALLERY_SIZE = "2"
+#
+# 1 is also the only value that CANNOT crop. Galleries crop each tile to fill it, and the tile's
+# shape changes with how many images are in the group, so the square art in assets/thumbs/ fits a
+# 2x2 but not necessarily a row of two. A lone image is shown whole, and gets the portrait art.
+CARD_GALLERY_SIZE = "1"
 
 # Cards per /collection page. Kept separate from CARD_GALLERY_SIZE on purpose: a collection is a
 # browsing view whose card names are already written out, and halving this doubles the clicks --
