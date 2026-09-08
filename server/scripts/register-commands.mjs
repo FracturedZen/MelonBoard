@@ -70,8 +70,18 @@ const commands = [
   },
   {
     name: "open",
-    description: "Open a melon card pack",
+    description: "Open a card pack",
     options: [
+      {
+        name: "type",
+        description: "Which pack (default: melon)",
+        type: 3,
+        required: false,
+        choices: [
+          { name: "melon pack — the playing-card deck", value: "melon" },
+          { name: "user pack — people, lore and the 1-of-1s", value: "user" },
+        ],
+      },
       {
         name: "pay",
         description: "What to pay with (default: melon slices)",
@@ -87,38 +97,6 @@ const commands = [
   {
     name: "collection",
     description: "See the cards you have collected",
-  },
-  {
-    // Staff only, enforced in the worker -- Discord's default_member_permissions would also hide
-    // it, but the worker check is what actually stops it being run.
-    name: "cardslot",
-    description: "Admin: manage bought card slots",
-    options: [
-      {
-        name: "list",
-        description: "Show bought slots and which are waiting on art",
-        type: 1,
-      },
-      {
-        name: "activate",
-        description: "Put a finished card into the packs",
-        type: 1,
-        options: [
-          {
-            name: "id",
-            description: "Claim id, from /cardslot list",
-            type: 4,
-            required: true,
-          },
-          {
-            name: "key",
-            description: "Card key: the PNG filename without .png, eg. frac_king",
-            type: 3,
-            required: true,
-          },
-        ],
-      },
-    ],
   },
   {
     name: "pings",
@@ -147,10 +125,6 @@ const commands = [
           { name: "Melon Baron (10m points)", value: "baron" },
           { name: "Melon Tycoon (100m points)", value: "tycoon" },
           { name: "Melon Overlord (1b points)", value: "overlord" },
-          { name: "Your card: Rare (1m points)", value: "card_rare" },
-          { name: "Your card: Epic (10m points)", value: "card_epic" },
-          { name: "Your card: Legendary (100m points)", value: "card_legendary" },
-          { name: "Your card: 1-of-1 (1b points)", value: "card_oneofone" },
         ],
       },
     ],

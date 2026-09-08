@@ -17,8 +17,8 @@
  */
 
 import {
-  DECK, BY_KEY, RARITY, CARDS_PER_PACK,
-  artUrl, thumbUrl, setArtUrl, drawCard, isNoteworthy, prettyKey, RANKS, SUITS,
+  DECK, USER_DECK, BY_KEY, RARITY, CARDS_PER_PACK,
+  artUrl, thumbUrl, setArtUrl, drawCard, drawUserCard, isNoteworthy, prettyKey, RANKS, SUITS,
 } from "./cards.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -809,10 +809,6 @@ async function discordInteraction(request, env, ctx) {
       return json({ type: 4, data: await collectionEmbed(env, body) });
     }
 
-    if (name === "cardslot") {
-      return json({ type: 4, data: await cardSlotCommand(env, body) });
-    }
-
     if (name === "pings") {
       return json({ type: 4, data: await togglePings(env, body) });
     }
@@ -925,26 +921,6 @@ async function verifyDiscord(env, signature, timestamp, body) {
 }
 
 /** Melon rind green. Used as the accent throughout so the bot reads as one thing. */
-/**
- * Card slots: buy your own card into the pack pool.
- *
- * The art has to be drawn by hand, so buying RESERVES a slot rather than creating a card. The card
- * is not pullable until an admin runs /cardslot activate, which is also what names it. One
- * purchase per tier per player, enforced by UNIQUE (uuid, tier) on card_claims rather than by a
- * read-then-write check, which would race itself.
- *
- * rare/epic/legendary join their tier's pool and stay there: endless copies, the tier's own odds,
- * one more equally likely outcome within it. The 1-of-1 goes through the numbered machinery
- * instead -- a print run of one in limited_supply, claimed atomically like every other numbered
- * card -- so there is one mechanism for scarce cards, not two.
- */
-const SHOP_CARDS = [
-  { key: "card_rare",      tier: "rare",      label: "Rare card",      price: 1000000 },
-  { key: "card_epic",      tier: "epic",      label: "Epic card",      price: 10000000 },
-  { key: "card_legendary", tier: "legendary", label: "Legendary card", price: 100000000 },
-  { key: "card_oneofone",  tier: "unique",    label: "1-of-1 card",    price: 1000000000 },
-];
-
 const MELON_GREEN = 0x54b435;
 const MELON_PINK = 0xe8536f;
 const MELON_GREY = 0x6b7280;
@@ -1403,18 +1379,13 @@ async function shopEmbed(env, body) {
     return `${mark}  **${r.label}** — \`${fmt(r.price)}\` points  ·  \`/buy ${r.key}\``;
   }).join("\n");
 
-  // Which card tiers this player has already taken -- each is a one-off.
-  const mine = bal
-    ? await env.DB.prepare("SELECT tier FROM card_claims WHERE uuid = ?").bind(bal.uuid).all()
-    : { results: [] };
-  const takenTiers = new Set((mine.results ?? []).map((r) => r.tier));
-
-  const cardLines = SHOP_CARDS.map((c) => {
-    const has = takenTiers.has(c.tier);
-    const affordable = bal && bal.points >= c.price;
-    const mark = has ? "✅" : affordable ? "🟢" : "🔒";
-    return `${mark}  **${c.label}** — \`${fmt(c.price)}\` points  ·  \`/buy ${c.key}\``;
-  }).join("\n");
+  // Both packs cost the same; what differs is what is inside, so the price is written once.
+  const price = `\`${fmt(PACK_POINTS)}\` points or \`${fmt(PACK_SLICES)}\` 🍈`;
+  const packLines =
+    `🍉  **Melon pack** — ${price}  ·  \`/open\`\n` +
+    "_The playing-card deck: 52 cards, four holo aces, two jokers._\n" +
+    `👤  **User pack** — ${price}  ·  \`/open type:user\`\n` +
+    "_People and Minecraft lore. The only place one-of-ones are found._";
 
   const balanceLine = bal
     ? `\`${fmt(bal.points)}\` points  ·  \`${fmt(bal.slices)}\` 🍈 slices`
@@ -1427,8 +1398,7 @@ async function shopEmbed(env, body) {
       title: "🍉  Cosmetic roles",
       description: lines +
         "\n\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n\n" +
-        "**Your own card, in everyone's packs**\n" +
-        "_Art is drawn by hand after you buy. One purchase per tier._\n" + cardLines +
+        "**Card packs**\n" + packLines +
         "\n\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n\n" +
         "**Your balance**\n" + balanceLine,
       footer: {
@@ -1443,9 +1413,6 @@ async function buyCommand(env, body) {
   const user = body.member?.user ?? body.user ?? {};
   const discordId = String(user.id ?? "");
   const key = String(optionValue(body, "item") ?? "").toLowerCase();
-
-  const slot = SHOP_CARDS.find((c) => c.key === key);
-  if (slot) return await buyCardSlot(env, discordId, slot);
 
   const item = SHOP_ROLES.find((r) => r.key === key);
   if (!item) {
@@ -1510,150 +1477,6 @@ async function buyCommand(env, body) {
 }
 
 /** Adds a role to a member. Returns false on any failure so the caller can refund. */
-/**
- * Buys a slot in the card pool.
- *
- * Charge first, then claim the slot, then refund if the claim did not land -- the same order the
- * role purchase uses. The claim is an INSERT that the UNIQUE (uuid, tier) index can reject, so
- * "already bought this tier" is decided by the database and two simultaneous clicks cannot both
- * succeed. The read below it is only there to give a kind answer before taking any points.
- */
-async function buyCardSlot(env, discordId, slot) {
-  const bal = await balanceOf(env, discordId);
-
-  if (!bal) {
-    return ephemeral({
-      color: MELON_PINK,
-      title: "Link your account first",
-      description: "_Run `/link`, then enter the code in game._",
-    });
-  }
-
-  const existing = await env.DB.prepare(
-    "SELECT status FROM card_claims WHERE uuid = ? AND tier = ?"
-  ).bind(bal.uuid, slot.tier).first();
-
-  if (existing) {
-    return ephemeral({
-      color: MELON_GREY,
-      title: "You already have that tier",
-      description: existing.status === "pending"
-        ? `_Your **${slot.label}** is bought and waiting on art. Nothing was charged._`
-        : `_Your **${slot.label}** is already in the packs. Nothing was charged._\n\n` +
-          "_Each tier can only be bought once. The other tiers are still open._",
-    });
-  }
-
-  const paid = await spend(env, bal.uuid, "points", slot.price, "cardslot:" + slot.tier, discordId);
-
-  if (!paid) {
-    return ephemeral({
-      color: MELON_PINK,
-      title: "Not enough points",
-      description: `_A **${slot.label}** costs ${fmt(slot.price)} and you have ${fmt(bal.points)}._`,
-    });
-  }
-
-  const claimed = await env.DB.prepare(
-    `INSERT OR IGNORE INTO card_claims (uuid, discord_id, username, tier, bought_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).bind(bal.uuid, discordId, bal.username, slot.tier, now()).run();
-
-  if (!claimed?.meta?.changes) {
-    // Lost the race against another click. Hand the points back rather than charging twice for
-    // one slot.
-    await env.DB.prepare(
-      "UPDATE players SET points_spent = MAX(0, points_spent - ?) WHERE uuid = ?"
-    ).bind(slot.price, bal.uuid).run();
-
-    await env.DB.prepare(
-      "INSERT INTO purchases (uuid, discord_id, item, cost, currency, at) VALUES (?, ?, ?, ?, ?, ?)"
-    ).bind(bal.uuid, discordId, "refund:cardslot:" + slot.tier, -slot.price, "points", now()).run();
-
-    return ephemeral({
-      color: MELON_GREY,
-      title: "You already have that tier",
-      description: "_Nothing was charged._",
-    });
-  }
-
-  const id = claimed?.meta?.last_row_id;
-
-  await tellOwner(env,
-    `**Card slot bought** \u2014 claim \`#${id}\`\n` +
-    `<@${discordId}> (\`${bal.username}\`) bought a **${slot.label}**.\n\n` +
-    "Draw the art, save it as `assets/cards/<key>.png`, run `assets/make-thumbs.ps1`, push, then:\n" +
-    `\`/cardslot activate id:${id} key:<key>\``);
-
-  return ephemeral({
-    color: MELON_GREEN,
-    title: "🍉  " + slot.label + " reserved",
-    description:
-      `_Spent **${fmt(slot.price)}** points. Balance: **${fmt(bal.points - slot.price)}**._\n\n` +
-      "**Your card is being drawn.** It goes into the packs once the art is finished — " +
-      (slot.tier === "unique"
-        ? "as a one-of-one, so exactly one person will ever pull it."
-        : `as a **${RARITY[slot.tier].label}**, pullable by anyone, forever.`) +
-      "\n\n_Your leaderboard score is unchanged — that ranks lifetime points._",
-  });
-}
-
-/**
- * Sends the art ticket to the owner by DM, falling back to the commands channel.
- *
- * A bot cannot DM someone who has server DMs turned off, and that failure is silent. Somebody has
- * just spent up to a billion points, so a lost ticket is not an acceptable outcome: if the DM does
- * not land the ticket goes to the channel instead, where it is at least visible.
- */
-async function tellOwner(env, content) {
-  const owner = String(env.OWNER_DISCORD_ID ?? "").trim();
-  const token = env.DISCORD_BOT_TOKEN;
-  if (!token) return false;
-
-  const headers = {
-    "Authorization": "Bot " + token,
-    "Content-Type": "application/json",
-    "User-Agent": DISCORD_UA,
-  };
-
-  if (owner) {
-    try {
-      const dm = await fetch(`${DISCORD_API}/users/@me/channels`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ recipient_id: owner }),
-      });
-
-      if (dm.ok) {
-        const channel = await dm.json();
-        const sent = await fetch(`${DISCORD_API}/channels/${channel.id}/messages`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ content }),
-        });
-
-        if (sent.ok) return true;
-      }
-    } catch (err) {
-      console.error("owner DM failed", String(err));
-    }
-  }
-
-  const fallback = env.COMMANDS_CHANNEL_ID;
-  if (!fallback) return false;
-
-  const res = await fetch(`${DISCORD_API}/channels/${fallback}/messages`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      content: (owner ? `<@${owner}> ` : "") + "_(could not DM)_\n" + content,
-      allowed_mentions: { parse: [], users: owner ? [owner] : [] },
-    }),
-  });
-
-  return res.ok;
-}
-
 async function grantRole(env, discordId, roleId) {
   if (!env.DISCORD_BOT_TOKEN || !env.GUILD_ID) {
     console.error("grantRole: GUILD_ID or bot token missing");
@@ -1966,6 +1789,11 @@ const PACK_POINTS = 3000;
 /**
  * Opens a pack.
  *
+ * TWO PACKS. The melon pack is the playing-card deck, all of it endless. The user pack is people
+ * and Minecraft lore, and is the only pack that can produce a one-of-one. They share no cards, so
+ * which pack a pull came from is never in question, and only the user pack has to touch the
+ * limited-supply tables at all.
+ *
  * Payment is taken through spend(), which re-checks affordability inside the UPDATE, so somebody
  * spamming the command cannot open two packs on one balance.
  *
@@ -1986,10 +1814,16 @@ async function openPack(env, body, ctx) {
     });
   }
 
+  const pack = optionValue(body, "type") === "user" ? "user" : "melon";
+  const userPack = pack === "user";
+  const draw = userPack ? drawUserCard : drawCard;
+
   const currency = optionValue(body, "pay") === "points" ? "points" : "slices";
   const cost = currency === "points" ? PACK_POINTS : PACK_SLICES;
 
-  const paid = await spend(env, bal.uuid, currency, cost, "pack", discordId);
+  // The two packs are separate line items in `purchases` so the split can be read back later.
+  // "pack" is kept as the melon pack's name rather than renamed, so existing history still counts.
+  const paid = await spend(env, bal.uuid, currency, cost, userPack ? "pack:user" : "pack", discordId);
   if (!paid) {
     const have = currency === "slices" ? bal.slices : bal.points;
     return ephemeral({
@@ -1999,23 +1833,24 @@ async function openPack(env, body, ctx) {
     });
   }
 
-  // Numbered cards with copies left. Supply is per card; each claimed copy is a row.
-  const supply = await limitedSupply(env);
-  const { results: claimed } = await env.DB.prepare(
-    "SELECT card, COUNT(*) AS taken FROM limited_claims GROUP BY card"
-  ).all();
+  // One-of-ones with copies left. Supply is per card; each claimed copy is a row. Only the user
+  // pack has a scarce tier, so the melon pack skips both queries entirely.
+  let availableUniques = [];
+  if (userPack) {
+    const supply = await limitedSupply(env);
+    const { results: claimed } = await env.DB.prepare(
+      "SELECT card, COUNT(*) AS taken FROM limited_claims GROUP BY card"
+    ).all();
 
-  const takenBy = new Map((claimed ?? []).map((r) => [r.card, r.taken]));
-  const availableUniques = Object.entries(supply)
-    .map(([key, total]) => ({ key, total, remaining: total - (takenBy.get(key) ?? 0) }))
-    .filter((u) => u.remaining > 0);
-
-  // Bought cards that are live, merged into their tiers for this pack's draws.
-  const extras = await boughtCardPools(env);
+    const takenBy = new Map((claimed ?? []).map((r) => [r.card, r.taken]));
+    availableUniques = Object.entries(supply)
+      .map(([key, total]) => ({ key, total, remaining: total - (takenBy.get(key) ?? 0) }))
+      .filter((u) => u.remaining > 0);
+  }
 
   const pulled = [];
   for (let i = 0; i < CARDS_PER_PACK; i++) {
-    let card = drawCard(availableUniques, extras);
+    let card = draw(availableUniques);
 
     if (card.unique) {
       // Claim a specific copy. The composite key makes this atomic: if somebody took that copy a
@@ -2037,7 +1872,7 @@ async function openPack(env, body, ctx) {
       }
 
       if (!claimedCopy) {
-        card = drawCard([]);
+        card = draw([]);
       } else {
         card = { ...card, copyNo: claimedCopy, ofTotal: total };
         if (entry) {
@@ -2065,8 +1900,9 @@ async function openPack(env, body, ctx) {
     "UPDATE players SET packs_opened = packs_opened + 1 WHERE uuid = ?"
   ).bind(bal.uuid).run();
 
-  // Announce the good ones, in the background so the reply is not held up.
-  const best = pulled.filter((c) => isNoteworthy(c.rarity));
+  // Announce the good ones, in the background so the reply is not held up. What counts as good
+  // depends on the pack: a user-pack legendary is 1 in 9, so only its one-of-ones are announced.
+  const best = pulled.filter((c) => isNoteworthy(c.rarity, pack));
   if (best.length) {
     ctx.waitUntil(announcePulls(env, bal.username, discordId, best));
   }
@@ -2091,8 +1927,9 @@ async function openPack(env, body, ctx) {
     const group = cardGallery(pulled.slice(i, i + size), `pack-${i}`, i === 0
       ? {
         color: colour,
-        author: { name: "PACK OPENED" },
-        title: `🍉  ${escapeMd(bal.username)} opened a pack`,
+        author: { name: userPack ? "USER PACK OPENED" : "PACK OPENED" },
+        title: `${userPack ? "👤" : "🍉"}  ${escapeMd(bal.username)} opened a ` +
+          `${userPack ? "user " : ""}pack`,
         description: lines.join("\n"),
       }
       : { color: colour });
@@ -2193,8 +2030,12 @@ function cardGallery(cards, tag, lead) {
 }
 
 /**
- * Print runs for numbered cards, as {cardKey: copies}. Held in meta rather than in code so cards
- * and print runs can change without a deploy.
+ * Print runs for the user pack's one-of-ones, as {cardKey: copies}. Held in meta rather than in
+ * code so cards and print runs can change without a deploy.
+ *
+ * Only holo cards belong here now. Everything else in the user pack is endless, so a key left in
+ * this map that is not a holo would quietly become scarce again -- the melon pack no longer reads
+ * it at all.
  */
 async function limitedSupply(env) {
   const raw = await getMeta(env, "limited_supply");
@@ -2240,42 +2081,6 @@ async function announcePulls(env, username, discordId, cards) {
   }
 }
 
-/**
- * Bought cards that are live, as {key, tier} rows. One query serves both the draw pools and the
- * collection's name/rarity lookup, since a bought card is otherwise unknown to BY_KEY.
- */
-async function activeBoughtCards(env) {
-  const { results } = await env.DB.prepare(
-    "SELECT card_key, tier FROM card_claims WHERE status = 'active' AND card_key IS NOT NULL"
-  ).all();
-
-  return results ?? [];
-}
-
-/**
- * Bought cards grouped for drawCard. The 1-of-1s are left out: they are numbered cards, drawn
- * through limited_supply and limited_claims, and adding them here as well would make them both
- * endless and scarce.
- */
-async function boughtCardPools(env) {
-  const pools = { rare: [], epic: [], legendary: [] };
-
-  for (const row of await activeBoughtCards(env)) {
-    const pool = pools[row.tier];
-    if (pool) pool.push({ key: row.card_key, rarity: row.tier, name: prettyKey(row.card_key) });
-  }
-
-  return pools;
-}
-
-/** Bought cards by key, so /collection can name and tier a card that is not in the deck. */
-async function boughtCardLookup(env) {
-  return new Map((await activeBoughtCards(env)).map((row) => [
-    row.card_key,
-    { key: row.card_key, rarity: row.tier, name: prettyKey(row.card_key) },
-  ]));
-}
-
 async function collectionEmbed(env, body) {
   const user = body.member?.user ?? body.user ?? {};
   return await collectionPage(env, String(user.id ?? ""), 1);
@@ -2307,14 +2112,14 @@ function indexOrLast(order, value) {
 }
 
 /** What ownedCards holds, as a list sorted best tier first, so paging through it is predictable. */
-async function collectionList(env, uuid, bought) {
+async function collectionList(env, uuid) {
   const owned = await ownedCards(env, uuid);
 
   return [...owned]
     .map(([key, count]) => {
-      // Not in the deck means either a bought card or a numbered one; the bought ones carry their
-      // own tier, and anything still unknown is numbered.
-      const card = BY_KEY.get(key) ?? bought.get(key) ?? { key, rarity: "unique" };
+      // BY_KEY covers both decks. Anything it does not know is a card that has since been retired
+      // from the pools but is still held, so treat it as numbered rather than dropping it.
+      const card = BY_KEY.get(key) ?? { key, rarity: "unique", name: prettyKey(key) };
       return {
         key,
         rarity: card.rarity,
@@ -2339,8 +2144,7 @@ async function collectionPage(env, discordId, page) {
     });
   }
 
-  const bought = await boughtCardLookup(env);
-  const cards = await collectionList(env, bal.uuid, bought);
+  const cards = await collectionList(env, bal.uuid);
 
   if (!cards.length) {
     return ephemeral({
@@ -2369,7 +2173,7 @@ async function collectionPage(env, discordId, page) {
     author: { name: "COLLECTION" },
     title: `🍉  ${escapeMd(bal.username)}`,
     description:
-      `**${cards.length}** of **${DECK.length + bought.size}** distinct · **${fmt(held)}** held` +
+      `**${cards.length}** of **${DECK.length + USER_DECK.length}** distinct · **${fmt(held)}** held` +
       ` · page **${at}/${pages}**\n\n` + lines.join("\n"),
   });
 
@@ -2403,167 +2207,6 @@ function collectionNav(discordId, page, pages) {
       jump(">>", "last", pages, page >= pages),
     ],
   };
-}
-
-/** Admin: list bought card slots waiting on art, and put finished ones into the packs. */
-async function cardSlotCommand(env, body) {
-  if (!isLotteryAdmin(body)) {
-    return ephemeral({
-      color: MELON_PINK,
-      title: "Admins only",
-      description: "_Card slots are activated by server staff._",
-    });
-  }
-
-  const sub = (body.data?.options ?? [])[0];
-
-  if (sub?.name === "list") return await cardSlotList(env);
-  if (sub?.name === "activate") {
-    return await cardSlotActivate(env, Number(subOption(sub, "id") ?? 0),
-      String(subOption(sub, "key") ?? "").trim());
-  }
-
-  return ephemeral({ color: MELON_GREY, title: "Unknown subcommand" });
-}
-
-async function cardSlotList(env) {
-  const { results } = await env.DB.prepare(
-    "SELECT id, username, tier, status, card_key FROM card_claims ORDER BY status, id"
-  ).all();
-
-  if (!results?.length) {
-    return ephemeral({
-      color: MELON_GREY,
-      author: { name: "CARD SLOTS" },
-      title: "🍉  Nothing bought yet",
-    });
-  }
-
-  const lines = results.map((r) => r.status === "pending"
-    ? `⏳ \`#${r.id}\` **${escapeMd(r.username)}** — _${RARITY[r.tier].label}_ · awaiting art`
-    : `✅ \`#${r.id}\` **${escapeMd(r.username)}** — _${RARITY[r.tier].label}_ · \`${r.card_key}\``);
-
-  return ephemeral({
-    color: MELON_GREEN,
-    author: { name: "CARD SLOTS" },
-    title: "🍉  Bought card slots",
-    description: lines.join("\n").slice(0, 3900),
-    footer: { text: "/cardslot activate id:<n> key:<filename without .png>" },
-  });
-}
-
-/**
- * Puts a finished card into the packs.
- *
- * The art is checked before anything is written. Activating a card whose PNG is missing would put
- * a permanently broken image into the pool -- and for a 1-of-1 that is unrecoverable, because
- * somebody will claim the only copy of a card that cannot be displayed. Both the portrait and the
- * square version are required, since galleries use one and single embeds the other.
- */
-async function cardSlotActivate(env, id, key) {
-  if (!id || !key) {
-    return ephemeral({ color: MELON_PINK, title: "Need both an id and a key" });
-  }
-
-  if (!/^[a-z0-9_]+$/.test(key)) {
-    return ephemeral({
-      color: MELON_PINK,
-      title: "Bad card key",
-      description: "_Lower case letters, digits and underscores only — it is a filename._",
-    });
-  }
-
-  if (BY_KEY.has(key)) {
-    return ephemeral({
-      color: MELON_PINK,
-      title: "That key is already a deck card",
-      description: `_\`${key}\` is part of the standard deck. Pick another._`,
-    });
-  }
-
-  const claim = await env.DB.prepare(
-    "SELECT * FROM card_claims WHERE id = ?"
-  ).bind(id).first();
-
-  if (!claim) {
-    return ephemeral({ color: MELON_PINK, title: `No claim #${id}` });
-  }
-
-  if (claim.status !== "pending") {
-    return ephemeral({
-      color: MELON_GREY,
-      title: "Already activated",
-      description: `_Claim #${id} is live as \`${claim.card_key}\`._`,
-    });
-  }
-
-  const taken = await env.DB.prepare(
-    "SELECT id FROM card_claims WHERE card_key = ?"
-  ).bind(key).first();
-
-  if (taken) {
-    return ephemeral({
-      color: MELON_PINK,
-      title: "That key is taken",
-      description: `_\`${key}\` already belongs to claim #${taken.id}._`,
-    });
-  }
-
-  for (const url of [artUrl({ key }), thumbUrl({ key })]) {
-    const res = await fetch(url, { method: "GET", headers: { "User-Agent": DISCORD_UA } });
-    if (!res.ok) {
-      return ephemeral({
-        color: MELON_PINK,
-        title: "Art is not published yet",
-        description: `_Could not fetch:_\n\`${url}\`\n\n` +
-          "_Add the PNG, run `assets/make-thumbs.ps1`, push, then try again._",
-      });
-    }
-  }
-
-  await env.DB.prepare(
-    "UPDATE card_claims SET card_key = ?, status = 'active', activated_at = ? WHERE id = ?"
-  ).bind(key, now(), id).run();
-
-  // A 1-of-1 is a numbered card, so it joins limited_supply and is claimed through the same
-  // atomic copy-walk as every other numbered card rather than getting its own scarcity mechanism.
-  if (claim.tier === "unique") {
-    const supply = await limitedSupply(env);
-    supply[key] = 1;
-    await setMeta(env, "limited_supply", JSON.stringify(supply));
-  }
-
-  const label = RARITY[claim.tier].label;
-
-  // Worth telling the room about: it changes what is in everybody's packs.
-  if (env.COMMANDS_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
-    await fetch(`${DISCORD_API}/channels/${env.COMMANDS_CHANNEL_ID}/messages`, {
-      method: "POST",
-      headers: {
-        "Authorization": "Bot " + env.DISCORD_BOT_TOKEN,
-        "Content-Type": "application/json",
-        "User-Agent": DISCORD_UA,
-      },
-      body: JSON.stringify({
-        content: `<@${claim.discord_id}>'s card is now in the packs!`,
-        embeds: [{
-          color: RARITY[claim.tier].colour,
-          author: { name: "NEW CARD" },
-          title: `${rarityMark(claim.tier)}  ${prettyKey(key)}`,
-          description: `_${label}${claim.tier === "unique" ? " · one of one" : ""}, ` +
-            `commissioned by **${escapeMd(claim.username)}**_`,
-          image: { url: artUrl({ key }) },
-        }],
-        allowed_mentions: { parse: [], users: [claim.discord_id] },
-      }),
-    });
-  }
-
-  return ephemeral({
-    color: MELON_GREEN,
-    title: "🍉  " + prettyKey(key) + " is live",
-    description: `_Claim #${id} · ${label}${claim.tier === "unique" ? " · print run of 1" : ""}._`,
-  });
 }
 
 /** Toggles the rare-pull ping role. */
@@ -3013,11 +2656,11 @@ function resolveCardKey(input) {
   const flat = input.replace(/\s+/g, "_");
   if (BY_KEY.has(flat)) return flat;
 
-  const uniques = input.replace(/\s+/g, "_");
-  if (/^[a-z0-9_]+$/.test(uniques)) {
-    // 1-of-1 keys are not in the base deck, so accept them by shape.
-    if (/^(dumzy|frac|plutoren)_\d(_holo)?$/.test(uniques)) return uniques;
-  }
+  // User cards are keyed in lower case and written with a #, so "HvH #1" is hvh_1 and
+  // "Grikky #3 holo" is grikky_3_holo. This is a second attempt rather than the first because
+  // deck keys carry the rank's case -- lowercasing would turn "A_of_hearts" into a miss.
+  const slug = input.toLowerCase().replace(/#/g, "").trim().replace(/\s+/g, "_");
+  if (BY_KEY.has(slug)) return slug;
 
   const holo = /\bholo\b/.test(input);
   const cleaned = input.replace(/\bholo(graphic)?\b/g, " ").trim();

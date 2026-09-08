@@ -25,3 +25,7 @@ package-lock.json
 # server/scripts/backup.ps1 writes outside the tree by default; this is the second lock.
 melonboard-*.sql
 backups/
+
+# Source art for the user pack, already copied into assets/cards with lower-case keys.
+# Kept out of the repo so the same PNG is not committed twice under two names.
+namemc_profile_cards_3pose/

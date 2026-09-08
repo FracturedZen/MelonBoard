@@ -196,31 +196,6 @@ CREATE TABLE IF NOT EXISTS sets (
 
 CREATE INDEX IF NOT EXISTS idx_sets_uuid ON sets(uuid);
 
--- A bought slot in the card pool: "put my card in the packs", priced by tier.
---
--- UNIQUE (uuid, tier) is what enforces one purchase per tier per player. It lives here rather than
--- in a read-then-write check because that check races itself -- two clicks a moment apart both
--- read "not bought yet" and both charge.
---
--- A slot is bought PENDING. The art is drawn by hand, so the card only becomes pullable when an
--- admin activates it with /cardslot activate, which is what sets card_key. That key is the PNG
--- filename without .png and doubles as the display name via prettyKey, so there is no separate
--- name to keep in step.
-CREATE TABLE IF NOT EXISTS card_claims (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  uuid          TEXT NOT NULL,
-  discord_id    TEXT NOT NULL,
-  username      TEXT NOT NULL,          -- Minecraft name at purchase, for the art ticket
-  tier          TEXT NOT NULL,          -- rare | epic | legendary | unique
-  card_key      TEXT,                   -- set at activation
-  status        TEXT NOT NULL DEFAULT 'pending',   -- pending | active
-  bought_at     INTEGER NOT NULL,
-  activated_at  INTEGER,
-  UNIQUE (uuid, tier)
-);
-
-CREATE INDEX IF NOT EXISTS idx_card_claims_status ON card_claims(status);
-
 -- ============================================================================ GIVEAWAYS
 
 CREATE TABLE IF NOT EXISTS lotteries (
