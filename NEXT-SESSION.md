@@ -5,22 +5,23 @@ files, which load automatically — read `melonboard-project.md` before touching
 
 ## Not yet live — do these in this order
 
-The user pack is written, bundle-checked and exercised offline, but nothing has been deployed.
-**The order matters**; see "Why this order" below.
+The user pack is written, bundle-checked, exercised offline, committed and **pushed** (`3a8e821`);
+all 66 new PNGs were confirmed serving from the GitHub CDN. Nothing else has been done live.
+**The order matters**; see "Why this order" below. All of it runs from `server/`.
 
-1. **Push the assets first.** Art is served from GitHub, so a worker that references a PNG which
-   is not pushed yet renders a broken embed.
-2. **Rewrite `limited_supply`** to the nine holos. From `server/`:
-   ```bash
-   npx wrangler d1 execute melonboard --remote --command "INSERT INTO meta (k, v) VALUES ('limited_supply', '{\"frac_1_holo\":1,\"frac_2_holo\":1,\"frac_3_holo\":1,\"dumzy_1_holo\":1,\"dumzy_2_holo\":1,\"dumzy_3_holo\":1,\"plutoren_1_holo\":1,\"plutoren_2_holo\":1,\"plutoren_3_holo\":1}') ON CONFLICT(k) DO UPDATE SET v = excluded.v"
+1. ~~Push the assets.~~ Done — art must be live before the worker references it, and it is.
+2. **Rewrite `limited_supply`** to the nine holos:
    ```
-   D1 auth was EXPIRED as of 2026-09-08 (`code: 7403`, "account is not valid or is not authorized").
-   Fix with `wrangler login --browser false` and open the printed URL in Chrome explicitly.
-   **`meta` is `(k, v)`, not `(key, value)`** — a wrong-column UPDATE is how the first draft of
-   `migrations/003_user_pack.sql` was written, and only the offline probe caught it.
-3. **Deploy** the worker. Show the tail of the output; never grep it for success lines.
-4. **Drop `card_claims`** once `SELECT COUNT(*) FROM card_claims` returns 0 (it should — no slot
-   was ever bought). `migrations/003_user_pack.sql` has both statements written down.
+   npx wrangler d1 execute melonboard --remote --yes --file migrations/003a_limited_supply.sql
+   ```
+   Pass it as a `--file`. The value is JSON, and getting nested double quotes through PowerShell
+   into a native command's `--command` argument intact is not worth attempting.
+3. **Deploy** the worker: `npx wrangler deploy`. Show the tail of the output; never grep it for
+   success lines. Then wait ~8s before testing anything.
+4. **Drop `card_claims`**, only now that the deploy has landed:
+   ```
+   npx wrangler d1 execute melonboard --remote --yes --file migrations/003b_drop_card_claims.sql
+   ```
 5. **Register commands.** `/open` gained a `type` option and `/cardslot` is gone, so until this
    runs the picker still shows the old set. Only Z can do this — the bot token exists solely as a
    Cloudflare secret and cannot be read back:
@@ -40,6 +41,18 @@ against the NEW supply map: the only risk is somebody pulling a holo out of a *m
 1/30000 per card. Doing it the other way round — deploying first — leaves the NEW worker reading
 the OLD 30-key map, which would hand out lore cards stamped as numbered `#1/5` at 1/1000 per card
 and write junk into `limited_claims`. That is a hundred times likelier and it does not clean up.
+
+Step 4 must come *after* step 3 for the opposite reason: the old worker still reads `card_claims`
+in `shopEmbed` and in `openPack`'s bought-card pools, so dropping the table early breaks `/shop`
+and `/open` until the deploy lands.
+
+**Live state, read 2026-09-08 before any of this:** `card_claims` 0 rows (nothing was ever
+bought), `limited_claims` 0 rows (no numbered copy has ever been pulled, so nothing needs
+preserving), `collection` 31 rows, `limited_supply` still holding all thirty keys.
+
+D1 auth is FINE — `wrangler whoami` shows `creationplunder@gmail.com`, account
+`b58afa6c57a3a13d4842153376d9277d`, with `d1 (write)`. An earlier `code: 7403` on a query was
+transient and cleared on retry; do not go re-running `wrangler login` over one of those.
 
 ## The two packs
 
