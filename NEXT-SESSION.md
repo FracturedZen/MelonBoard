@@ -3,56 +3,48 @@
 Continue work on MelonBoard at `C:\Users\Z\Desktop\MelonBoard`. Most context is in your memory
 files, which load automatically — read `melonboard-project.md` before touching anything.
 
-## Not yet live — do these in this order
+## LIVE as of 2026-09-08 — nothing outstanding
 
-The user pack is written, bundle-checked, exercised offline, committed and **pushed** (`3a8e821`);
-all 66 new PNGs were confirmed serving from the GitHub CDN. Nothing else has been done live.
-**The order matters**; see "Why this order" below. All of it runs from `server/`.
+The user pack shipped. Verified against the live database and the deployment list, not assumed:
 
-1. ~~Push the assets.~~ Done — art must be live before the worker references it, and it is.
-2. **Rewrite `limited_supply`** to the nine holos:
-   ```
-   npx wrangler d1 execute melonboard --remote --yes --file migrations/003a_limited_supply.sql
-   ```
-   Pass it as a `--file`. The value is JSON, and getting nested double quotes through PowerShell
-   into a native command's `--command` argument intact is not worth attempting.
-3. **Deploy** the worker: `npx wrangler deploy`. Show the tail of the output; never grep it for
-   success lines. Then wait ~8s before testing anything.
-4. **Drop `card_claims`**, only now that the deploy has landed:
-   ```
-   npx wrangler d1 execute melonboard --remote --yes --file migrations/003b_drop_card_claims.sql
-   ```
-5. **Register commands.** `/open` gained a `type` option and `/cardslot` is gone, so until this
-   runs the picker still shows the old set. Only Z can do this — the bot token exists solely as a
-   Cloudflare secret and cannot be read back:
-   ```powershell
-   cd C:\Users\Z\Desktop\MelonBoard\server
-   $env:DISCORD_APP_ID    = "1545309849594892288"
-   $env:DISCORD_GUILD_ID  = "1537368810787442728"
-   $env:DISCORD_BOT_TOKEN = "<paste bot token>"
-   node scripts/register-commands.mjs
-   Remove-Item Env:DISCORD_BOT_TOKEN
-   ```
-6. **Then verify in Discord:** `/open` and `/open type:user`, `/shop`, `/collection`, and a
-   `/trade` naming a user card by its written name (`HvH #1`).
+- worker version `5c9ee070-2c5e-4fb7-9cd7-03985818af8b`, deployed 2026-09-08T19:27Z
+- `limited_supply` holds exactly the nine holo keys, one copy each
+- `card_claims` is dropped
+- 13 guild commands registered, `/open` carrying its `type` option
+- all 66 new PNGs serving from the GitHub CDN
 
-**Why this order.** Between step 2 and step 3 there is a window where the OLD worker is live
-against the NEW supply map: the only risk is somebody pulling a holo out of a *melon* pack, at
-1/30000 per card. Doing it the other way round — deploying first — leaves the NEW worker reading
-the OLD 30-key map, which would hand out lore cards stamped as numbered `#1/5` at 1/1000 per card
-and write junk into `limited_claims`. That is a hundred times likelier and it does not clean up.
+**Not yet exercised in Discord:** `/open type:user`, `/shop`'s new pack section, `/collection`
+with user cards in it, and a `/trade` naming one by its written name (`HvH #1`). Do those first.
 
-Step 4 must come *after* step 3 for the opposite reason: the old worker still reads `card_claims`
-in `shopEmbed` and in `openPack`'s bought-card pools, so dropping the table early breaks `/shop`
-and `/open` until the deploy lands.
+**A deploy is not done until it is verified, and the verification is cheap.** Everything above
+was reported as run once while `limited_supply` still held all thirty keys, `card_claims` still
+existed and the newest deployment was three days old — only `register-commands` had actually
+landed. That state is quiet and wrong rather than broken: the old worker ignores the unknown
+`type` option, so `/open type:user` hands out a MELON pack and nobody sees an error. Read the
+three facts back before believing it shipped:
 
-**Live state, read 2026-09-08 before any of this:** `card_claims` 0 rows (nothing was ever
-bought), `limited_claims` 0 rows (no numbered copy has ever been pulled, so nothing needs
-preserving), `collection` 31 rows, `limited_supply` still holding all thirty keys.
+```powershell
+cd C:\Users\Z\Desktop\MelonBoard\server
+npx wrangler d1 execute melonboard --remote --json --command "SELECT v FROM meta WHERE k='limited_supply'"
+npx wrangler d1 execute melonboard --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name='card_claims'"
+npx wrangler deployments list
+```
+
+**Deploy ordering, if any of this is ever redone.** `003a` must land BEFORE the deploy: the other
+way round leaves the new worker reading the old thirty-key map and stamping lore cards as numbered
+`#1/5` at 1/1000 per card, writing junk into `limited_claims`. `003b` must land AFTER it, because
+the old worker still reads `card_claims` in `shopEmbed` and in `openPack`'s bought-card pools.
+`wrangler deploy` reads `wrangler.toml` from the working directory, so all of it runs from
+`server/`. Pass migrations as `--file`; the supply value is JSON and getting nested double quotes
+through PowerShell into a native command's `--command` intact is not worth attempting.
 
 D1 auth is FINE — `wrangler whoami` shows `creationplunder@gmail.com`, account
 `b58afa6c57a3a13d4842153376d9277d`, with `d1 (write)`. An earlier `code: 7403` on a query was
 transient and cleared on retry; do not go re-running `wrangler login` over one of those.
+
+**Claude cannot run the live steps.** The auto-mode classifier blocks D1 writes and
+`wrangler deploy`; reads, `d1 list` and `whoami` all go through. Command registration additionally
+needs the bot token, which exists solely as a Cloudflare secret and cannot be read back.
 
 ## The two packs
 
@@ -179,11 +171,11 @@ means Discord's **gallery**: consecutive embeds sharing the **same `url`** merge
 
 ## State
 
-Built and working, but see "Not yet live" — the user pack has not been deployed:
+All of this is built, deployed and verified live:
 
 - Fabric mod reporting melon stats, protocol 3, Mojang profile-key signature auth
 - Worker at `https://melonboard.creationplunder.workers.dev`, D1 database, cron every 2 min
-- 12 guild commands: `/leaderboard /melonstats /wallet /shop /buy /link /lottery /open
+- 13 guild commands: `/leaderboard /melonstats /wallet /shop /buy /link /lottery /open
   /collection /combine /sets /trade /pings`
 - **121 cards across two packs.** Melon: 52 playing cards + 4 holo aces + 2 jokers = 58.
   User: 12 lore + 14 people × 3 poses + 9 holo 1-of-1s = 63. All 236 set images still serving
